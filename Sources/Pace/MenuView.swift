@@ -65,11 +65,15 @@ private struct LaneRow: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 2).fill(Color.gray.opacity(0.3))
+                    // Semantic colors, not hardcoded near-white: the popover
+                    // background follows the system appearance, so white-on-white
+                    // made the fill and the pace tick invisible in light mode.
+                    // Same fix IconRenderer already carries (review finding I2).
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(reading.isAheadOfPace ? Color.red : Color(white: 0.85))
+                        .fill(reading.isAheadOfPace ? Color.red : Color.primary)
                         .frame(width: geo.size.width * CGFloat(reading.lane.percentUsed) / 100)
                     if let percentElapsed = reading.percentElapsed {
-                        Rectangle().fill(Color.white.opacity(0.9))
+                        Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(0.9))
                             .frame(width: 2)
                             .offset(x: geo.size.width * CGFloat(percentElapsed) / 100)
                     }
