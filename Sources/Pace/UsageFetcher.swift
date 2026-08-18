@@ -98,23 +98,6 @@ final class UsageFetcher: NSObject {
         case navigationBroke(step: String)
     }
 
-    /// Shared JS click-by-text helper — kept as a documented fallback; the
-    /// live click-through path below uses the data-testid selectors Task 6
-    /// confirmed against the real DOM instead of text matching.
-    private func clickButton(matching text: String, exact: Bool) async -> Bool {
-        let escaped = text.replacingOccurrences(of: "'", with: "\\'")
-        let expr = exact ? "b.textContent.trim() === '\(escaped)'" : "b.textContent.trim().includes('\(escaped)')"
-        let script = """
-        (function() {
-          const btns = Array.from(document.querySelectorAll('button'));
-          const match = btns.find(b => b.textContent && \(expr));
-          if (match) { match.click(); return true; }
-          return false;
-        })();
-        """
-        return (try? await webView.evaluateJavaScript(script) as? Bool) ?? false
-    }
-
     /// Clicks an element matching `selector` via `.click()` in JS. Returns
     /// whether the element was found and clicked.
     private func clickElement(matching selector: String) async -> Bool {
