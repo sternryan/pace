@@ -63,11 +63,12 @@ Compared against the fixture strings in `Tests/PaceCoreTests/UsageParserTests.sw
 - **Percent format**: `"65% used"` — matches fixture format `"21% used"` exactly. No change needed.
 - **Relative reset format**: `"Resets in 2 hr 5 min"` — matches fixture format `"Resets in 3 hr 53 min"` exactly (`"X hr Y min"`). No change needed.
 - **Weekday reset format**: `"Resets Sat 2:00 PM"` — byte-for-byte identical to the fixture. No change needed.
-- **Extra banner lines** (`"If you see a prompt to set up usage credits for it, restart Claude Code."` and `"Learn more about usage limits"`) appear between the Fable-5-banner and the `"All models"` anchor in the real text but were not in the Task 7 fixture. **This does not break `UsagePanelTextExtractor`**: its chunking is anchor-to-anchor (`"Current session"` → `"All models"` → `"Fable"`), and `UsageParser.parsePercent`/`parseRelativeReset` both take the *first* match within a chunk, so extra non-matching lines before the real percent/reset text are harmless. Traced by hand; no code or test changes required.
-- **Real "Fable" section header vs. "Fable 5 is still included..." banner substring**: confirmed the existing line-anchored regex (`(?m)^Fable$`) in `UsagePanelTextExtractor` correctly skips the banner sentence (not an exact-line match) and anchors on the real `"Fable"` header — exactly the collision the code's existing comment already calls out. No change needed.
+- **Extra banner lines** (`"If you see a prompt to set up usage credits for it, restart Claude Code."` and `"Learn more about usage limits"`) appear between the Fable-5-banner and the `"All models"` anchor in the real text but were not in the Task 7 fixture. **This will not break `UsagePanelTextExtractor`** (Task 7, not yet implemented — checked against the plan's Task 7 code block): its planned chunking is anchor-to-anchor (`"Current session"` → `"All models"` → `"Fable"`), and `UsageParser.parsePercent`/`parseRelativeReset` both take the *first* match within a chunk, so extra non-matching lines before the real percent/reset text are harmless. Traced by hand against the plan's Task 7 code; no fixture or planned-implementation changes required.
+- **Real "Fable" section header vs. "Fable 5 is still included..." banner substring**: confirmed the planned line-anchored regex (`(?m)^Fable$`) in the Task 7 code block correctly skips the banner sentence (not an exact-line match) and anchors on the real `"Fable"` header — exactly the collision the plan's own code comment already calls out. No change needed when Task 7 is implemented.
 
-**Conclusion: no fixture or implementation changes required for Tasks 3/7.** The
-reconstructed design-time fixtures turned out to be accurate.
+**Conclusion: no fixture changes required for Task 3, and no change needed to Task 7's
+planned implementation (not yet written) when it is implemented.** The reconstructed
+design-time fixtures turned out to be accurate.
 
 ## Step 4: Session window length — CONFIRMED via Anthropic support docs
 
@@ -78,14 +79,11 @@ session window for Pro/Max/Team/seat-based Enterprise plans.
 > "how much of your plan's five-hour session limit you've used thus far"
 > — https://support.claude.com/en/articles/9797557-usage-limit-best-practices
 
-This matches the live UI: current session showed "65% used" with "Resets in 2 hr 5 min"
-remaining at capture time — consistent with a 5-hour (300 min) total window (65% used
-implies ~1h 45m elapsed, +2h5m remaining ≈ 3h50m... not an exact match to 5h flat, which
-is expected since usage-based session windows don't reset on a fixed wall-clock schedule
-the way weekly lanes do — the 5-hour figure is the window LENGTH, not a guarantee that
-"remaining" and "elapsed" always sum to exactly 5h at a random sampling point mid-session
-if the session started before this capture). The support-doc citation is the authoritative
-source per the plan's own acceptance criteria, not the arithmetic cross-check.
+This is a within-session snapshot ("65% used", "Resets in 2 hr 5 min" remaining), not a
+before/after observation spanning an actual reset — per the brief's own rule, that kind
+of single-session snapshot is NOT valid evidence for window length on its own. It is not
+used as evidence here. The support-doc citation above is the sole source for the
+5-hour figure.
 
 **Action for Task 8/9: `SessionWindow.confirmedLength` should be set to `5 * 3600` (18000
 seconds), not left as `nil`**, with a comment citing the support article above as the
