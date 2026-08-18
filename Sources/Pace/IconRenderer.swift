@@ -60,14 +60,17 @@ enum IconRenderer {
             // only color ever shown is red, and only on a lane that is ahead
             // of pace"). The glyph inherits the alpha dimming (0.45) from the
             // lockFocus context set above — whole stale treatment dims as one unit.
+            // Positioned in top-right corner, clear of all 3 lanes (which occupy y 1–15).
             let glyph = "‼"
-            let badgeFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            let badgeFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
             let badgeAttrs: [NSAttributedString.Key: Any] = [
                 .font: badgeFont,
                 .foregroundColor: NSColor.labelColor
             ]
             let badgeString = NSAttributedString(string: glyph, attributes: badgeAttrs)
-            let badgeRect = NSRect(x: width - 6, y: height - 11, width: 6, height: 6)
+            let badgeSize = badgeString.size()
+            // Position in top-right corner with 1pt padding from edges
+            let badgeRect = NSRect(x: width - badgeSize.width - 1, y: height - badgeSize.height - 1, width: badgeSize.width, height: badgeSize.height)
             badgeString.draw(in: badgeRect)
         }
 
