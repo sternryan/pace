@@ -54,9 +54,21 @@ enum IconRenderer {
         }
 
         if isStale {
-            let badge = NSRect(x: width - 5, y: height - 5, width: 4, height: 4)
-            NSColor.systemRed.setFill()
-            NSBezierPath(ovalIn: badge).fill()
+            // Draw a "‼" glyph to indicate stale state, using labelColor
+            // (appearance-aware, template-safe) — never systemRed, which
+            // must be reserved for ahead-of-pace lane fills only (spec: "the
+            // only color ever shown is red, and only on a lane that is ahead
+            // of pace"). The glyph inherits the alpha dimming (0.45) from the
+            // lockFocus context set above — whole stale treatment dims as one unit.
+            let glyph = "‼"
+            let badgeFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            let badgeAttrs: [NSAttributedString.Key: Any] = [
+                .font: badgeFont,
+                .foregroundColor: NSColor.labelColor
+            ]
+            let badgeString = NSAttributedString(string: glyph, attributes: badgeAttrs)
+            let badgeRect = NSRect(x: width - 6, y: height - 11, width: 6, height: 6)
+            badgeString.draw(in: badgeRect)
         }
 
         image.unlockFocus()
