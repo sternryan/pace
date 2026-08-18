@@ -60,17 +60,19 @@ enum IconRenderer {
             // only color ever shown is red, and only on a lane that is ahead
             // of pace"). The glyph inherits the alpha dimming (0.45) from the
             // lockFocus context set above — whole stale treatment dims as one unit.
-            // Positioned in top-right corner, clear of all 3 lanes (which occupy y 1–15).
+            // Use a fixed small corner rect (not derived from font metrics) to avoid
+            // line-height inflation pushing the glyph into lanes. 6pt font keeps
+            // visible ink ~3-4pt; when drawn in a 5pt-tall rect at y 11-16, ink
+            // stays mostly above lane 2 (y 12-15) with only minimal edge overlap.
             let glyph = "‼"
-            let badgeFont = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            let badgeFont = NSFont.systemFont(ofSize: 6, weight: .semibold)
             let badgeAttrs: [NSAttributedString.Key: Any] = [
                 .font: badgeFont,
                 .foregroundColor: NSColor.labelColor
             ]
             let badgeString = NSAttributedString(string: glyph, attributes: badgeAttrs)
-            let badgeSize = badgeString.size()
-            // Position in top-right corner with 1pt padding from edges
-            let badgeRect = NSRect(x: width - badgeSize.width - 1, y: height - badgeSize.height - 1, width: badgeSize.width, height: badgeSize.height)
+            // Fixed rect in top-right corner: x 17-22, y 11-16 (same area as original badge)
+            let badgeRect = NSRect(x: width - 5, y: height - 5, width: 5, height: 5)
             badgeString.draw(in: badgeRect)
         }
 
