@@ -21,6 +21,64 @@
 - No App Store distribution, no notarization — ad-hoc `codesign` for local install only.
 - Not built with Xcode project files — Swift Package Manager + Makefile.
 
+## Data flow
+
+```
+ Timer (6 min, persisted)         Preferences: Sign in click
+        │                                   │
+        ▼                                   ▼
+ AppState.refreshNow()          AppState.presentLogin()
+        │                          │            │
+        ▼                          ▼            └─ short poll loop
+ UsageFetcher.refresh()  ◄─────────┘               (8s × 15, ~2min)
+        │
+        │  isRefreshing guard (drops overlapping calls)
+        ▼
+ webView.load(claude.ai/new) ── 3s settle
+        │
+        ▼
+ clickThroughToUsagePanel()
+        │
+   ┌────┼────────────────┐
+   ▼    ▼                ▼
+ avatar Settings        Usage
+ click  click            click
+   │      │                │
+   │      │                ▼
+   │      │        reachedUsagePanel
+   │      ▼                │
+   │  navigationBroke ◄────┘ (if a later step fails)
+   ▼      │
+ notSignedIn │
+   │      │
+   └──┬───┘
+      ▼
+ FetchStatus.needsLogin / .navigationFailed(step)
+      │ (either → dropdown shows the RIGHT remediation, icon dims + ‼)
+      │
+      │ (success path continues)
+      ▼
+ document.body.innerText
+      │
+      ▼
+ UsagePanelTextExtractor.extractLanes()  ── line-anchored regex per lane
+      │           │
+      │           └─ UsageParser (percent / relative-reset / weekday-reset)
+      ▼
+ [LaneUsage] or nil (→ .parseError)
+      │
+      ▼
+ PaceCalculator.reading(for:now:)  ── per lane: %elapsed, ahead?, projection
+      │
+      ▼
+ AppState.paceReadings / .status / .lastSuccessAt
+      │
+      ├──────────────► IconRenderer.render() ── 3-lane bar+tick, red only
+      │                                          when hot, dimmed+‼ when stale,
+      │                                          empty tracks when readings=[]
+      └──────────────► MenuView ── reflects state next time dropdown opens
+```
+
 ---
 
 ## Task 1: Project scaffold
@@ -200,6 +258,7 @@ final class CoreTypesTests: XCTestCase {
         XCTAssertEqual(FetchStatus.parseError("x"), FetchStatus.parseError("x"))
         XCTAssertNotEqual(FetchStatus.parseError("x"), FetchStatus.parseError("y"))
         XCTAssertNotEqual(FetchStatus.ok, FetchStatus.needsLogin)
+        XCTAssertNotEqual(FetchStatus.needsLogin, FetchStatus.navigationFailed("x"))
     }
 }
 ```
@@ -258,6 +317,11 @@ public struct LaneUsage: Equatable, Sendable {
 public enum FetchStatus: Equatable, Sendable {
     case ok
     case needsLogin
+    /// Distinct from `.needsLogin`: the click-through navigation broke for a
+    /// reason OTHER than being signed out (e.g. claude.ai renamed a button).
+    /// Kept separate so the dropdown never tells you to sign in when you
+    /// already are — see Task 8's review finding.
+    case navigationFailed(String)
     case parseError(String)
 }
 ```
@@ -477,6 +541,20 @@ final class PaceCalculatorTests: XCTestCase {
         XCTAssertLessThan(reading.projectedCapDate!, resetDate)
     }
 
+    func testExactlyOnPaceIsNotAhead() {
+        // percentUsed == percentElapsed exactly is the boundary of "ahead" —
+        // the comparison is strictly `>`, so equal must NOT count as ahead.
+        let windowLength: TimeInterval = 7 * 24 * 3600
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let resetDate = now.addingTimeInterval(windowLength / 2) // exactly 50% elapsed
+        let lane = LaneUsage(kind: .allModelsWeek, percentUsed: 50, resetDate: resetDate, windowLength: windowLength)
+
+        let reading = PaceCalculator.reading(for: lane, now: now)
+
+        XCTAssertFalse(reading.isAheadOfPace)
+        XCTAssertNil(reading.projectedCapDate)
+    }
+
     func testBehindPaceHasNoProjection() {
         let windowLength: TimeInterval = 7 * 24 * 3600
         let now = Date(timeIntervalSince1970: 1_000_000)
@@ -567,7 +645,7 @@ public enum PaceFormatter {
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `swift test --filter PaceCalculatorTests`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -691,7 +769,7 @@ With the Usage tab open, run `document.body.innerText` (or the narrowest contain
 
 - [ ] **Step 4: Determine the session window length**
 
-Note the wall-clock time and the exact "Resets in Xh Ym" value. Repeat the observation at least a few hours later (ideally spanning an actual session reset, where the countdown jumps back up to its maximum). The difference between two countdowns plus the elapsed wall-clock time between observations gives the window length. If Anthropic documents this value directly (check support docs), record that as the source instead and skip the multi-observation method.
+Two observations that both fall within the SAME session only prove the countdown counts down — that's not evidence of the window length (review finding, cross-model). The observation MUST span an actual reset boundary: note the wall-clock time and the exact "Resets in Xh Ym" value, then check again later and confirm the countdown visibly jumped back up to its maximum (a reset happened) rather than just having ticked further down. The wall-clock time between the pre-reset and post-reset observations gives the window length. If Anthropic documents this value directly (check support docs), record that as the source instead — it's the only acceptable shortcut around waiting for a reset.
 
 - [ ] **Step 5: Write findings**
 
@@ -777,6 +855,30 @@ final class UsagePanelTextExtractorTests: XCTestCase {
         let broken = "Current session\nResets in 3 hr 53 min\n21% used"
         XCTAssertNil(UsagePanelTextExtractor.extractLanes(from: broken, now: Date(), sessionWindowLength: nil))
     }
+
+    func testBoundaryPercentValues() {
+        let boundarySample = """
+        Current session
+        Resets in 3 hr 53 min
+        0% used
+
+        All models
+        Resets Sat 2:00 PM
+        100% used
+
+        Fable
+        Resets Sat 2:00 PM
+        50% used
+        """
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 18, hour: 12))!
+
+        let lanes = UsagePanelTextExtractor.extractLanes(from: boundarySample, now: now, sessionWindowLength: nil)
+
+        XCTAssertEqual(lanes?.first { $0.kind == .session }?.percentUsed, 0)
+        XCTAssertEqual(lanes?.first { $0.kind == .allModelsWeek }?.percentUsed, 100)
+    }
 }
 ```
 
@@ -800,8 +902,13 @@ public enum UsagePanelTextExtractor {
     ]
 
     public static func extractLanes(from panelText: String, now: Date, sessionWindowLength: TimeInterval?) -> [LaneUsage]? {
+        // Line-anchored match, not a bare substring: "Fable" as a lane header
+        // stands alone on its own line, but claude.ai's own "Fable 5 is still
+        // included with your Max plan." banner also contains the substring
+        // "Fable" and would otherwise be matched first — see review finding.
         let found = laneAnchors.compactMap { kind, anchor -> (LaneKind, Range<String.Index>)? in
-            panelText.range(of: anchor).map { (kind, $0) }
+            let pattern = "(?m)^\(NSRegularExpression.escapedPattern(for: anchor))$"
+            return panelText.range(of: pattern, options: .regularExpression).map { (kind, $0) }
         }
         guard found.count == laneAnchors.count else { return nil }
 
@@ -838,7 +945,7 @@ public enum UsagePanelTextExtractor {
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `swift test --filter UsagePanelTextExtractorTests`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -856,9 +963,13 @@ git commit -m "feat: add UsagePanelTextExtractor"
 
 **Interfaces:**
 - Consumes: `UsagePanelTextExtractor`, `LaneUsage`, `FetchStatus` (PaceCore).
-- Produces: `UsageFetcherDelegate` protocol (`usageFetcher(_:didProduce:)`, `usageFetcher(_:didFailWith:)`), `UsageFetcher` (`delegate`, `refresh() async`, `presentLoginWindow()`, `clearSession() async`) — consumed by Task 9 (`AppState`).
+- Produces: `UsageFetcherDelegate` protocol (`usageFetcher(_:didProduce:)`, `usageFetcher(_:didFailWith:)`), `UsageFetcher` (`delegate`, `refresh() async`, `presentLoginWindow()`, `hideLoginWindow()`, `clearSession() async`) — consumed by Task 9 (`AppState`).
 
 This task has no unit tests — it drives a real `WKWebView` against the live internet, which isn't something to fake with fixtures. It's verified manually in Task 15. Before writing the click-path code, re-read `docs/superpowers/research/live-usage-page-notes.md` from Task 6 and use whatever avatar-button lookup it confirmed — the lookup below is a starting point, not a substitute for that.
+
+**Why click through instead of navigating directly to `claude.ai/settings/usage`:** design-time browser research tried the direct URL and it redirects to `claude.ai/new#settings/usage` without actually opening the Settings modal — the SPA doesn't hydrate the modal from the URL hash on a fresh load. The avatar → Settings → Usage click sequence below is what was confirmed to work, not an arbitrary choice (review finding — this rationale wasn't written down anywhere until now).
+
+**Known, accepted limitation (review finding, kept as-is):** the fixed `Task.sleep` waits below (3s initial load, 0.5s per click) are timing-based, not a real `WKNavigationDelegate` "page ready" signal. On a slow connection this can produce a false `.navigationFailed`/`.needsLogin` even though nothing is actually broken. Accepted because the failure is cosmetic (one dimmed icon until the next 6-minute tick self-heals) and a proper delegate-based wait is real added complexity not worth it for a personal tool. Revisit if Task 15's manual verification shows this happening often.
 
 - [ ] **Step 1: Implement**
 
@@ -887,6 +998,7 @@ final class UsageFetcher: NSObject {
 
     private let webView: WKWebView
     private let window: NSWindow
+    private var isRefreshing = false
 
     override init() {
         let config = WKWebViewConfiguration()
@@ -900,12 +1012,25 @@ final class UsageFetcher: NSObject {
     }
 
     func refresh() async {
+        // Guards against an overlapping fetch (e.g. the 6-min timer firing
+        // again while a slow scrape is still mid-flight) tearing the
+        // WKWebView's navigation state — see review finding on Task 9.
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         guard let url = URL(string: "https://claude.ai/new") else { return }
         webView.load(URLRequest(url: url))
         try? await Task.sleep(nanoseconds: 3_000_000_000)
 
-        guard await clickThroughToUsagePanel() else {
+        switch await clickThroughToUsagePanel() {
+        case .reachedUsagePanel:
+            break
+        case .notSignedIn:
             delegate?.usageFetcher(self, didFailWith: .needsLogin)
+            return
+        case .navigationBroke(let step):
+            delegate?.usageFetcher(self, didFailWith: .navigationFailed("Couldn't find the \(step) button — claude.ai's UI may have changed"))
             return
         }
 
@@ -929,55 +1054,60 @@ final class UsageFetcher: NSObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    func hideLoginWindow() {
+        window.setIsVisible(false)
+    }
+
     func clearSession() async {
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         await webView.configuration.websiteDataStore.removeData(ofTypes: types, modifiedSince: .distantPast)
     }
 
+    enum NavigationResult {
+        case reachedUsagePanel
+        /// The avatar/profile button itself couldn't be found or clicked —
+        /// that button only renders when signed in, so its absence is the
+        /// most likely explanation. Maps to FetchStatus.needsLogin.
+        case notSignedIn
+        /// The avatar step succeeded (so you ARE signed in) but a later step
+        /// broke — maps to FetchStatus.navigationFailed, never needsLogin,
+        /// since the "sign in" remediation would be wrong here.
+        case navigationBroke(step: String)
+    }
+
+    /// Shared JS click-by-text helper — all 3 navigation steps were near-
+    /// identical inline scripts before this (review finding, DRY).
+    private func clickButton(matching text: String, exact: Bool) async -> Bool {
+        let escaped = text.replacingOccurrences(of: "'", with: "\\'")
+        let expr = exact ? "b.textContent.trim() === '\(escaped)'" : "b.textContent.trim().includes('\(escaped)')"
+        let script = """
+        (function() {
+          const btns = Array.from(document.querySelectorAll('button'));
+          const match = btns.find(b => b.textContent && \(expr));
+          if (match) { match.click(); return true; }
+          return false;
+        })();
+        """
+        return (try? await webView.evaluateJavaScript(script) as? Bool) ?? false
+    }
+
     /// Starting point confirmed against Task 6's findings — the avatar-button
     /// match in particular MUST use whatever lookup Task 6 documented, not
     /// necessarily the placeholder text-match below.
-    private func clickThroughToUsagePanel() async -> Bool {
-        let openSettingsScript = """
-        (function() {
-          function clickButtonContaining(txt) {
-            const btns = Array.from(document.querySelectorAll('button'));
-            const match = btns.find(b => b.textContent && b.textContent.trim().includes(txt));
-            if (match) { match.click(); return true; }
-            return false;
-          }
-          // Task 6 must confirm the real avatar-button lookup and this call
-          // site should use it before this counts as done.
-          const avatarOpened = clickButtonContaining('Ryan');
-          return avatarOpened;
-        })();
-        """
-        let avatarOpened = (try? await webView.evaluateJavaScript(openSettingsScript) as? Bool) ?? false
-        guard avatarOpened else { return false }
+    private func clickThroughToUsagePanel() async -> NavigationResult {
+        // Task 6 must confirm the real avatar-button lookup and this call
+        // site should use it before this counts as done.
+        let avatarOpened = await clickButton(matching: "Ryan", exact: false)
+        guard avatarOpened else { return .notSignedIn }
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        let settingsScript = """
-        (function() {
-          const btns = Array.from(document.querySelectorAll('button'));
-          const match = btns.find(b => b.textContent && b.textContent.trim() === 'Settings');
-          if (match) { match.click(); return true; }
-          return false;
-        })();
-        """
-        _ = try? await webView.evaluateJavaScript(settingsScript)
+        let settingsOpened = await clickButton(matching: "Settings", exact: true)
+        guard settingsOpened else { return .navigationBroke(step: "Settings") }
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        let usageScript = """
-        (function() {
-          const btns = Array.from(document.querySelectorAll('button'));
-          const match = btns.find(b => b.textContent && b.textContent.trim() === 'Usage');
-          if (match) { match.click(); return true; }
-          return false;
-        })();
-        """
-        let usageOpened = (try? await webView.evaluateJavaScript(usageScript) as? Bool) ?? false
+        let usageOpened = await clickButton(matching: "Usage", exact: true)
         try? await Task.sleep(nanoseconds: 500_000_000)
-        return usageOpened
+        return usageOpened ? .reachedUsagePanel : .navigationBroke(step: "Usage")
     }
 
     private func readUsagePanelText() async -> String? {
@@ -1027,14 +1157,21 @@ final class AppState {
     private(set) var paceReadings: [PaceReading] = []
     private(set) var status: FetchStatus = .needsLogin
     private(set) var lastSuccessAt: Date?
-    var refreshInterval: TimeInterval = 360 // 6 minutes — Global Constraints default
+    // 6 minutes — Global Constraints default. Persisted so it survives
+    // relaunch instead of silently resetting every time (review finding).
+    var refreshInterval: TimeInterval = 360 {
+        didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
+    }
 
     private let fetcher: UsageFetcher
     private var timer: Timer?
+    private var postLoginPollTask: Task<Void, Never>?
 
     init(fetcher: UsageFetcher = UsageFetcher()) {
         self.fetcher = fetcher
         fetcher.delegate = self
+        let storedInterval = UserDefaults.standard.double(forKey: "refreshInterval")
+        if storedInterval > 0 { refreshInterval = storedInterval }
         startTimer()
         refreshNow()
     }
@@ -1052,6 +1189,21 @@ final class AppState {
 
     func presentLogin() {
         fetcher.presentLoginWindow()
+        // Poll on a short cadence right after sign-in instead of waiting for
+        // the next scheduled 6-min tick — the one moment a slow refresh
+        // cadence actually hurts (review finding, cross-model).
+        postLoginPollTask?.cancel()
+        postLoginPollTask = Task { @MainActor in
+            for _ in 0..<15 { // ~2 min at 8s intervals
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if Task.isCancelled { return }
+                await fetcher.refresh()
+                if status == .ok {
+                    fetcher.hideLoginWindow()
+                    return
+                }
+            }
+        }
     }
 
     func openClaudeUsagePage() {
@@ -1125,7 +1277,13 @@ import PaceCore
 
 enum IconRenderer {
     static func render(readings: [PaceReading], status: FetchStatus) -> NSImage {
-        let geometries = readings.map(IconGeometry.barGeometry(for:))
+        // Before the first successful fetch, readings is empty. Draw 3 empty
+        // tracks (no fill, no fake numbers) rather than nothing — the spec's
+        // "never blank the icon" invariant applies to first launch too, not
+        // just post-fetch failure states (review finding, cross-model).
+        let geometries = readings.isEmpty
+            ? Array(repeating: BarGeometry(fillFraction: 0, tickFraction: nil, isHot: false), count: 3)
+            : readings.map(IconGeometry.barGeometry(for:))
         let width: CGFloat = 22
         let height: CGFloat = 16
         let image = NSImage(size: NSSize(width: width, height: height))
@@ -1133,7 +1291,7 @@ enum IconRenderer {
         let isStale: Bool
         switch status {
         case .ok: isStale = false
-        case .needsLogin, .parseError: isStale = true
+        case .needsLogin, .navigationFailed, .parseError: isStale = true
         }
         let hasHotLane = geometries.contains { $0.isHot }
 
@@ -1142,21 +1300,29 @@ enum IconRenderer {
 
         let laneHeight: CGFloat = 3
         let gap: CGFloat = 2.5
+        // labelColor/secondaryLabelColor are appearance-aware (resolve to
+        // black in light mode, white in dark mode) — used instead of
+        // hardcoded white/grey so non-hot bars stay legible even when the
+        // whole image can't be template mode (the hot bar needs literal
+        // red). Hardcoded values would go fixed-near-white and vanish
+        // against a light menu bar — review finding, cross-model.
         for (index, geo) in geometries.enumerated() {
             let y = CGFloat(index) * (laneHeight + gap) + 1
             let trackRect = NSRect(x: 0, y: y, width: width, height: laneHeight)
-            NSColor(white: 0.29, alpha: 1).setFill()
+            NSColor.tertiaryLabelColor.setFill()
             NSBezierPath(roundedRect: trackRect, xRadius: 1, yRadius: 1).fill()
 
             let fillWidth = width * CGFloat(geo.fillFraction)
             let fillRect = NSRect(x: 0, y: y, width: fillWidth, height: laneHeight)
-            (geo.isHot ? NSColor.systemRed : NSColor(white: 0.95, alpha: 1)).setFill()
+            (geo.isHot ? NSColor.systemRed : NSColor.labelColor).setFill()
             NSBezierPath(roundedRect: fillRect, xRadius: 1, yRadius: 1).fill()
 
             if let tick = geo.tickFraction {
                 let tickX = width * CGFloat(tick)
-                NSColor.black.withAlphaComponent(0.6)
-                    .setFill()
+                // windowBackgroundColor punches a visible gap against the
+                // labelColor/red fill in both appearances — hardcoded black
+                // would vanish in dark mode (same bug class as above).
+                NSColor.windowBackgroundColor.withAlphaComponent(0.9).setFill()
                 NSRect(x: tickX, y: y - 1, width: 1, height: laneHeight + 2).fill()
             }
         }
@@ -1238,6 +1404,10 @@ struct MenuView: View {
             Button("Sign in to claude.ai") { appState.presentLogin() }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 16).padding(.vertical, 6)
+        case .navigationFailed(let detail):
+            Text("\(detail). Showing last known values — open claude.ai directly to check.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 6)
         case .parseError(let detail):
             Text("Couldn't refresh usage (\(detail)). Showing last known values.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -1312,6 +1482,24 @@ private struct MenuActionRow: View {
         .buttonStyle(.plain)
     }
 }
+
+#if DEBUG
+// Mock hot-lane data for visual verification — replaces hardcoding a
+// LaneUsage into AppState.init and reverting it afterward (review finding:
+// that approach risked shipping a forgotten test edit).
+#Preview("Hot lane") {
+    let now = Date()
+    let hotLane = LaneUsage(kind: .session, percentUsed: 70, resetDate: now.addingTimeInterval(3600), windowLength: 5 * 3600)
+    let coolLane = LaneUsage(kind: .allModelsWeek, percentUsed: 20, resetDate: now.addingTimeInterval(4 * 24 * 3600), windowLength: 7 * 24 * 3600)
+    let readings = [hotLane, coolLane].map { PaceCalculator.reading(for: $0, now: now) }
+    return VStack {
+        ForEach(readings, id: \.lane.kind) { reading in
+            Image(nsImage: IconRenderer.render(readings: [reading], status: .ok))
+        }
+    }
+    .padding()
+}
+#endif
 ```
 
 - [ ] **Step 2: Verify the target builds**
@@ -1404,6 +1592,7 @@ import ServiceManagement
 struct PreferencesView: View {
     @Bindable var appState: AppState
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchAtLoginError: String?
 
     var body: some View {
         Form {
@@ -1414,13 +1603,35 @@ struct PreferencesView: View {
 
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, newValue in
-                    try? newValue ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                    do {
+                        if newValue {
+                            try SMAppService.mainApp.register()
+                        } else {
+                            try SMAppService.mainApp.unregister()
+                        }
+                        launchAtLoginError = nil
+                    } catch {
+                        // Registration failed — revert to the real status
+                        // instead of showing a state that isn't true
+                        // (review finding, cross-model: "the toggle can lie").
+                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                        launchAtLoginError = error.localizedDescription
+                    }
                 }
+            if let launchAtLoginError {
+                Text(launchAtLoginError).font(.caption).foregroundStyle(.red)
+            }
 
             Button("Sign out of claude.ai") { appState.signOut() }
         }
         .padding(20)
         .frame(width: 320)
+        .onAppear {
+            // Re-sync with the real OS status every time Preferences opens —
+            // the @State init-time snapshot goes stale if registration
+            // status changes outside this view.
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 }
 ```
@@ -1484,9 +1695,11 @@ Not a code task — this is the live verification the spec calls for, since the 
 
 - [ ] **Step 3: Pace math sanity check** — by hand, compute % of window elapsed for the two weekly lanes (you know their 7-day cadence) and confirm it matches Pace's dropdown. For the session lane, confirm Pace shows "no tick" behavior if `SessionWindow.confirmedLength` is still `nil`, or correct pace math if Task 6 confirmed a value.
 
-- [ ] **Step 4: Hot-lane behavior** — either wait for a real ahead-of-pace lane, or temporarily hardcode a `LaneUsage` in `AppState.init` with `percentUsed` deliberately higher than its elapsed-time percentage, rebuild, and confirm: the icon's corresponding bar turns red (and only that bar), the dropdown shows the red "Projected to hit cap" line, and the projection date is before the reset date. Revert the temporary hardcode afterward.
+- [ ] **Step 4: Hot-lane behavior** — use Task 11's `#Preview("Hot lane")` in Xcode to confirm the visual: the hot lane's bar (and only that one) renders red, at both the icon size and in the dropdown row styling. Separately, confirm the underlying pace math against a real account: either wait for an actual ahead-of-pace lane, or check `PaceCalculatorTests.testAheadOfPaceComputesProjectionBeforeReset` is passing (it already covers the projection-before-reset invariant) — no need to hardcode test data into `AppState.init` for this.
 
 - [ ] **Step 5: Failure states** — quit Pace, disable Wi-Fi, relaunch. Confirm the icon shows last-known values dimmed with the ‼ badge (or, on true first-launch-with-no-network, a clearly non-crashing empty state) and the dropdown explains what happened. Re-enable Wi-Fi and confirm the next timer tick recovers to `.ok`.
+
+- [ ] **Step 5b: navigationFailed path (added by review)** — temporarily change the `"Settings"` match text in `clickButton(matching:exact:)`'s call site to something that won't match (e.g. `"Settingszzz"`), rebuild, and confirm: the dropdown shows the `navigationFailed` copy ("Couldn't find the Settings button...") and NOT the "Sign in to claude.ai" button, and the icon dims with the ‼ badge exactly like the other stale states. Revert the temporary change afterward.
 
 - [ ] **Step 6: Refresh cadence** — leave Pace running and confirm "updated Xm ago" in the dropdown advances and resets roughly every 6 minutes without manual refresh.
 
@@ -1495,3 +1708,21 @@ Not a code task — this is the live verification the spec calls for, since the 
 - [ ] **Step 8: Record the outcome**
 
 If every step above passes, this plan is complete. If anything doesn't match, fix it, note what was wrong and why in the commit message, and re-run the affected steps before calling it done — per the project's "nothing is done until verified end-to-end" rule, this task is the actual gate, not the earlier unit tests.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | issues_found | 12 findings — 9 applied as fixes, 1 tension resolved in favor of the existing design (innerText scraping choice), 1 style suggestion accepted (#Preview over hardcode-and-revert), 1 dismissed as not a real repo issue (skill-header boilerplate) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 20 findings across Architecture/Code Quality/Test/Performance + outside voice — all resolved: 16 applied directly to the plan, 4 explicitly kept-as-designed with rationale captured in `TODOS.md` |
+| Design Review | `/plan-devex-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**CODEX:** ran as the outside-voice pass; found 2 real bugs the Claude-only review missed outright (blank icon on first launch contradicting the spec's own "never blank the icon" invariant; light-mode illegibility when the icon drops out of template mode) plus 2 real UX/reliability gaps (launch-at-login toggle can silently lie about its actual state; no sign-in completion detection means up to a 6-minute wait on first use) — all four fixed in the plan before this report was written.
+
+**CROSS-MODEL:** strong overlap on the session-window-length risk (both reviews flagged it independently; Codex pushed the Task 6 wording from "ideally" to a hard requirement) and on the sleep-based-readiness tradeoff (Codex argued it's not merely cosmetic; kept as designed anyway, now documented as an explicit accepted-risk rather than an unstated assumption). One genuine disagreement: Codex called `document.body.innerText` self-inflicted fragility; the resolution kept it as designed, reasoning that a narrower-container CSS selector would introduce the same class-name churn risk Task 6 already warns against for the avatar button.
+
+**VERDICT:** ENG REVIEW CLEARED — ready to implement.
+
+NO UNRESOLVED DECISIONS
