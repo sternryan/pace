@@ -33,7 +33,11 @@ enum IconRenderer {
         // red). Hardcoded values would go fixed-near-white and vanish
         // against a light menu bar — review finding, cross-model.
         for (index, geo) in geometries.enumerated() {
-            let y = CGFloat(index) * (laneHeight + gap) + 1
+            // Top-to-bottom in the icon must match the dropdown's list order
+            // (session, all-models week, Fable week) — the dropdown renders
+            // index 0 first/topmost, so the icon draws index 0 at the highest
+            // y here to line the two views up consistently.
+            let y = CGFloat(geometries.count - 1 - index) * (laneHeight + gap) + 1
             let trackRect = NSRect(x: 0, y: y, width: width, height: laneHeight)
             NSColor.tertiaryLabelColor.setFill()
             NSBezierPath(roundedRect: trackRect, xRadius: 1, yRadius: 1).fill()
