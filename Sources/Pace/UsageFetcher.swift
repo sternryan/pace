@@ -2,6 +2,11 @@ import Foundation
 import WebKit
 import PaceCore
 
+/// MainActor-isolated so a delegate call lands its state mutation before the
+/// calling `refresh()`/`scrapeCurrentPage()` returns. A `nonisolated` protocol
+/// forces conformers to hop through an unstructured Task, which made the
+/// post-login poll read a stale `status` (review finding I5).
+@MainActor
 protocol UsageFetcherDelegate: AnyObject {
     func usageFetcher(_ fetcher: UsageFetcher, didProduce lanes: [LaneUsage])
     func usageFetcher(_ fetcher: UsageFetcher, didFailWith status: FetchStatus)
@@ -22,19 +27,27 @@ final class UsageFetcher: NSObject {
     private let webView: WKWebView
     private let window: NSWindow
     private var isRefreshing = false
+    /// True while the sign-in window is on screen. There is only one WKWebView,
+    /// so navigating it during sign-in throws away whatever the user has typed
+    /// (review finding C1) — every navigating path checks this first.
+    private(set) var isPresentingLogin = false
 
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 900), configuration: config)
-        window = NSWindow(contentRect: webView.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: webView.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Pace — Sign in to claude.ai"
         window.contentView = webView
+        window.isReleasedWhenClosed = false
         window.setIsVisible(false)
         super.init()
+        window.delegate = self
     }
 
     func refresh() async {
+        // Never reload the page the user is signing into.
+        guard !isPresentingLogin else { return }
         // Guards against an overlapping fetch (e.g. the 6-min timer firing
         // again while a slow scrape is still mid-flight) tearing the
         // WKWebView's navigation state — see review finding on Task 9.
@@ -46,38 +59,62 @@ final class UsageFetcher: NSObject {
         webView.load(URLRequest(url: url))
         try? await Task.sleep(nanoseconds: 3_000_000_000)
 
+        await scrape()
+    }
+
+    /// Reads whatever the WKWebView is already showing, without navigating —
+    /// the post-login poll's detection mechanism, so watching for sign-in
+    /// completion can't destroy the sign-in itself.
+    /// Returns true once the page is past claude.ai's sign-in gate, whether or
+    /// not the panel then parsed, so the caller knows sign-in finished.
+    @discardableResult
+    func scrapeCurrentPage() async -> Bool {
+        guard !isRefreshing else { return false }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        return await scrape()
+    }
+
+    @discardableResult
+    private func scrape() async -> Bool {
         switch await clickThroughToUsagePanel() {
         case .reachedUsagePanel:
             break
         case .notSignedIn:
             delegate?.usageFetcher(self, didFailWith: .needsLogin)
-            return
+            return false
         case .navigationBroke(let step):
             delegate?.usageFetcher(self, didFailWith: .navigationFailed("Couldn't find the \(step) button — claude.ai's UI may have changed"))
-            return
+            return true
         }
 
         guard let panelText = await readUsagePanelText(), !panelText.isEmpty else {
             delegate?.usageFetcher(self, didFailWith: .parseError("Usage panel text not found"))
-            return
+            return true
         }
 
         guard let lanes = UsagePanelTextExtractor.extractLanes(
             from: panelText, now: Date(), sessionWindowLength: SessionWindow.confirmedLength
         ) else {
             delegate?.usageFetcher(self, didFailWith: .parseError("Could not parse usage panel text"))
-            return
+            return true
         }
 
         delegate?.usageFetcher(self, didProduce: lanes)
+        return true
     }
 
     func presentLoginWindow() {
+        isPresentingLogin = true
         window.setIsVisible(true)
         window.makeKeyAndOrderFront(nil)
+        // LSUIElement apps aren't brought forward by makeKeyAndOrderFront alone,
+        // so without this the sign-in window opens behind whatever the user is in.
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func hideLoginWindow() {
+        isPresentingLogin = false
         window.setIsVisible(false)
     }
 
@@ -131,6 +168,26 @@ final class UsageFetcher: NSObject {
     }
 
     private func readUsagePanelText() async -> String? {
-        try? await webView.evaluateJavaScript("document.body.innerText") as? String
+        guard let body = try? await webView.evaluateJavaScript("document.body.innerText") as? String else { return nil }
+        return Self.slicedToUsagePanel(body)
+    }
+
+    /// `document.body.innerText` covers the whole page including the left
+    /// conversation sidebar, and the extractor takes the first line-anchored
+    /// match of each lane anchor — so a chat titled exactly "Fable" would win
+    /// over the real lane header. Slice from the panel's own heading, which is
+    /// how Task 6's research captured this text in the first place. Stable text
+    /// anchor, same category as the lane anchors, not a churn-prone class name.
+    static func slicedToUsagePanel(_ bodyText: String) -> String {
+        guard let anchor = bodyText.range(of: "Plan usage limits") else { return bodyText }
+        return String(bodyText[anchor.lowerBound...])
+    }
+}
+
+extension UsageFetcher: NSWindowDelegate {
+    /// The user can close the sign-in window themselves now that it has a close
+    /// button — clear the flag so scheduled refreshes resume.
+    func windowWillClose(_ notification: Notification) {
+        isPresentingLogin = false
     }
 }
