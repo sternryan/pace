@@ -1,7 +1,7 @@
 # Live claude.ai Usage Panel — Research Findings
 
 Captured 2026-08-18 via claude-in-chrome browser automation against a real, logged-in
-claude.ai session (account: Ryan, plan: Max (5x)).
+claude.ai session (plan: Max (5x)).
 
 ## Step 1: Navigation path confirmed
 
