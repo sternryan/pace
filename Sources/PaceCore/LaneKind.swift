@@ -1,4 +1,4 @@
-public enum LaneKind: String, CaseIterable, Hashable, Sendable {
+public enum LaneKind: String, CaseIterable, Hashable, Sendable, Codable {
     case session
     case allModelsWeek
     case fableWeek

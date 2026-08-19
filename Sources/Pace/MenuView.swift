@@ -35,6 +35,14 @@ struct MenuView: View {
             Button("Sign in to claude.ai") { appState.presentLogin() }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 16).padding(.vertical, 6)
+        case .tokenExpired:
+            Text("Claude Code login expired. Open Claude Code and run /login. Showing last known values.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 6)
+        case .transient(let detail):
+            Text("Couldn't reach the usage API (\(detail)). Showing last known values.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 6)
         case .navigationFailed(let detail):
             Text("\(detail). Showing last known values — open claude.ai directly to check.")
                 .font(.caption).foregroundStyle(.secondary)

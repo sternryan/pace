@@ -17,7 +17,7 @@ enum IconRenderer {
         let isStale: Bool
         switch status {
         case .ok: isStale = false
-        case .needsLogin, .navigationFailed, .parseError: isStale = true
+        case .needsLogin, .navigationFailed, .parseError, .tokenExpired, .transient: isStale = true
         }
         let hasHotLane = geometries.contains { $0.isHot }
 
