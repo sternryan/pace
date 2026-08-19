@@ -148,11 +148,12 @@ browser session").
 
 - **Persisted last-good cache** — `UsageSnapshot` JSON in
   `~/Library/Application Support/Pace/last-usage.json`. Loaded at launch and
-  rendered immediately; rendered on any fetch failure; ANY cache-loaded or
-  post-failure data is labeled with its age ("cached · Xm ago") — an age tag
-  on everything cached is more honest than a binary 10-minute threshold
-  (amended 2026-08-19 during eng review). Contains percentages and
-  timestamps only — never credentials (README says so).
+  rendered immediately; rendered on any fetch failure. Cache-loaded data is
+  labeled with its age ("cached · Xm ago"); after a failed refresh the
+  dropdown says last-known values are shown and the Refresh row carries the
+  last-success age — an age tag beats a binary 10-minute threshold (amended
+  2026-08-19 during eng review). Contains percentages and timestamps only —
+  never credentials (README says so).
 - **Overage row** — dropdown row "Extra usage $X.XX" when the snapshot reports
   extra usage enabled and nonzero (API mode only; the scrape path doesn't
   carry it).

@@ -1378,7 +1378,7 @@ git commit -m "feat: UsageSource seam, mode selection, AppState on snapshots (sc
 - Test: `Tests/PaceCoreTests/SnapshotCacheTests.swift`
 
 **Interfaces:**
-- Consumes: `UsageSnapshot` (Task 2), `AppState.applySnapshot(_:stale:)` (Task 7).
+- Consumes: `UsageSnapshot` (Task 2), `AppState.applySnapshot(_:fromCache:)` (Task 7).
 - Produces: `SnapshotCache(directory: URL)` with `func load() -> UsageSnapshot?`, `func save(_ snapshot: UsageSnapshot)`. Default directory: `~/Library/Application Support/Pace/`, file `last-usage.json`.
 
 - [ ] **Step 1: Write the failing tests** — create `Tests/PaceCoreTests/SnapshotCacheTests.swift`:
@@ -1783,7 +1783,7 @@ final class PaceNotifier {
 
 (`requestAuthorization` is idempotent — after the first grant/deny it returns the stored answer without re-prompting, so awaiting it on every post is cheap and correct.)
 
-- [ ] **Step 4: Wire into AppState.** Add stored properties `private var notificationGovernor = NotificationGovernor()` and `private let notifier = PaceNotifier()`. In `applySnapshot`, after computing `paceReadings`, gate on PROVENANCE (`fromCache`), not age — a relaunch inside the 10-minute freshness window still must not re-announce an alarm the user already dismissed:
+- [ ] **Step 4: Wire into AppState.** Add stored properties `private var notificationGovernor = NotificationGovernor()` and `private let notifier = PaceNotifier()`. In `applySnapshot`, after computing `paceReadings`, gate on PROVENANCE (`fromCache`), not age — a relaunch right after an alarming fetch must not re-announce an alarm the user already dismissed:
 
 ```swift
         // Cached data must never notify — a relaunch would re-announce an
