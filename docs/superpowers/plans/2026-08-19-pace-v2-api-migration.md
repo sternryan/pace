@@ -200,7 +200,7 @@ git commit -m "feat(core): LaneSeverity, lane display override, FetchStatus.toke
 
 **Interfaces:**
 - Consumes: `LaneUsage` (Task 1).
-- Produces: `ExtraUsage` (`dollarsUsed: Double`, `isEnabled: Bool`) and `UsageSnapshot` (`lanes: [LaneUsage]`, `extraUsage: ExtraUsage?`, `fetchedAt: Date`), both `Codable`, plus `UsageSnapshot.isStale(now:threshold:)`.
+- Produces: `ExtraUsage` (`dollarsUsed: Double`, `isEnabled: Bool`) and `UsageSnapshot` (`lanes: [LaneUsage]`, `extraUsage: ExtraUsage?`, `fetchedAt: Date`), both `Codable`.
 
 - [ ] **Step 1: Write the failing tests** — create `Tests/PaceCoreTests/UsageSnapshotTests.swift`:
 
@@ -239,12 +239,6 @@ final class UsageSnapshotTests: XCTestCase {
         XCTAssertNoThrow(try JSONDecoder().decode(UsageSnapshot.self, from: data))
     }
 
-    func testStaleness() {
-        let fetched = Date(timeIntervalSince1970: 1_700_000_000)
-        let snapshot = sampleSnapshot(fetchedAt: fetched)
-        XCTAssertFalse(snapshot.isStale(now: fetched.addingTimeInterval(9 * 60)))
-        XCTAssertTrue(snapshot.isStale(now: fetched.addingTimeInterval(11 * 60)))
-    }
 }
 ```
 
@@ -278,14 +272,10 @@ public struct UsageSnapshot: Equatable, Sendable, Codable {
         self.extraUsage = extraUsage
         self.fetchedAt = fetchedAt
     }
-
-    /// Data older than the threshold gets a visible "cached" label rather than
-    /// being hidden — last-good numbers with an age tag beat a blank icon.
-    public func isStale(now: Date, threshold: TimeInterval = 10 * 60) -> Bool {
-        now.timeIntervalSince(fetchedAt) > threshold
-    }
 }
 ```
+
+(No `isStale` helper: cached data is labeled with its AGE whenever it is shown — an age tag is more honest than a binary threshold, and the UI derives it from `fetchedAt` directly.)
 
 - [ ] **Step 4: Run the full suite** — `swift test`. Expected: PASS.
 
@@ -306,7 +296,7 @@ git commit -m "feat(core): ExtraUsage + UsageSnapshot codable cache format"
 - Modify: `Sources/PaceCore/IconGeometry.swift`
 - Modify: `Sources/Pace/MenuView.swift`
 - Modify: `Tests/PaceCoreTests/IconGeometryTests.swift` (one constructor call gains `isAlarmed: true`)
-- Test: `Tests/PaceCoreTests/PaceCalculatorTests.swift` (append)
+- Test: `Tests/PaceCoreTests/PaceCalculatorTests.swift` (append 4 tests + AMEND 2 existing — see Step 1b)
 
 **Interfaces:**
 - Consumes: `LaneUsage` (Task 1).
@@ -378,6 +368,26 @@ func testAheadOfPaceLaneProjectsCapBeforeReset() {
     XCTAssertEqual(reading.capBeforeReset, true)
 }
 ```
+
+- [ ] **Step 1b: Amend two EXISTING tests in the same file** — decoupling the projection from the ahead verdict means on-pace and behind-pace lanes now get projections, and two v1 tests assert they don't. Change `testExactlyOnPaceIsNotAhead`'s projection assertion (keep its setup) to:
+
+```swift
+    XCTAssertFalse(reading.isAheadOfPace)
+    // Projections now exist for on- and behind-pace lanes too. At exactly
+    // on pace the cap lands exactly ON the reset, so it is not "before".
+    XCTAssertNotNil(reading.projectedCapDate)
+    XCTAssertEqual(reading.capBeforeReset, false)
+```
+
+and rename `testBehindPaceHasNoProjection` to `testBehindPaceProjectsAfterReset` (the old name states the opposite of the new behavior), keeping its setup and changing its assertions to:
+
+```swift
+    XCTAssertFalse(reading.isAheadOfPace)
+    XCTAssertNotNil(reading.projectedCapDate)
+    XCTAssertEqual(reading.capBeforeReset, false)
+```
+
+(`testUnknownWindowLengthProducesNoTickOrProjection` and the new guard test are unaffected — they exit via the `windowLength == nil` early return and the elapsed guard respectively.)
 
 - [ ] **Step 2: Run to verify failure** — `swift test --filter PaceCalculatorTests`. Expected: FAIL (new asserts / missing members).
 
@@ -1068,7 +1078,7 @@ git commit -m "feat: native Keychain credential store + ApiUsageSource"
 
 **Interfaces:**
 - Consumes: `UsageSource`, `ApiUsageSource`, `KeychainCredentialStore` (Task 6); existing `UsageFetcher`.
-- Produces: `enum DataSourceMode { case api, browser }`; `AppState.mode: DataSourceMode` (private(set) var — browser mode upgrades to API on manual refresh when credentials appear); `AppState.applySnapshot(_ snapshot: UsageSnapshot, stale: Bool, fromCache: Bool)` (Task 8 consumes; `fromCache` distinguishes provenance from age — cache-loaded data must never notify or re-save); `AppState.latestSnapshot: UsageSnapshot?`. `UsageFetcher` gains `func fetchSnapshot() async -> ScrapeOutcome` and loses the delegate protocol.
+- Produces: `enum DataSourceMode { case api, browser }`; `AppState.mode: DataSourceMode` (private(set) var — browser mode upgrades to API on MANUAL refresh only, when credentials appear); `AppState.applySnapshot(_ snapshot: UsageSnapshot, fromCache: Bool)` (Task 8 consumes; `fromCache` is provenance — cache-loaded data must never notify or re-save; age labeling is derived from the snapshot's `fetchedAt` in the UI); `AppState.latestSnapshot: UsageSnapshot?`. `UsageFetcher` gains `func fetchSnapshot() async -> ScrapeOutcome` and loses the delegate protocol.
 
 - [ ] **Step 1: Convert `UsageFetcher` from delegate to result-returning.** In `Sources/Pace/UsageFetcher.swift`: delete the `UsageFetcherDelegate` protocol and the `weak var delegate` property. Change the private `scrape()` so that instead of calling `delegate?...` it returns the outcome, and add a public async API. Replace `refresh()`/`scrapeCurrentPage()`/`scrape()` with:
 
@@ -1242,17 +1252,31 @@ final class AppState {
     func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshNow() }
+            Task { @MainActor in self?.scheduledRefresh() }
         }
     }
 
+    /// Timer-driven. No mode re-evaluation — the spec re-evaluates mode on
+    /// MANUAL refresh only, so browser-mode users don't pay a Keychain
+    /// attribute scan on the MainActor every tick.
+    private func scheduledRefresh() {
+        Task { await performFetch() }
+    }
+
+    /// User-initiated. Re-evaluates mode first, upgrade-only (the user may
+    /// have installed Claude Code while Pace was running). Never during an
+    /// open sign-in — yanking the scraper mid-login would orphan the flow.
     func refreshNow() {
-        // Spec: mode is re-evaluated on manual refresh, upgrade-only. The
-        // check is attributes-only (prompt-free), so it's safe every call.
-        if mode == .browser, store.hasAnyItem() {
+        if mode == .browser, scrapeSource?.fetcher.isPresentingLogin != true, store.hasAnyItem() {
+            postLoginPollTask?.cancel()
+            let retiring = scrapeSource
             mode = .api
             source = ApiUsageSource(store: store)
             scrapeSource = nil
+            // The WKWebView session existed solely for Pace's scraping; the
+            // API owns the data now, so drop the stored claude.ai cookies
+            // rather than leaving them on disk with no UI to clear them.
+            Task { await retiring?.fetcher.clearSession() }
         }
         Task { await performFetch() }
     }
@@ -1265,7 +1289,7 @@ final class AppState {
         guard let result = await source.fetch() else { return } // skipped — leave state as-is
         switch result {
         case .success(let snapshot):
-            applySnapshot(snapshot, stale: false, fromCache: false)
+            applySnapshot(snapshot, fromCache: false)
         case .failure(let failure):
             status = failure
             // Last-known readings stay rendered; mark them as cached so the
@@ -1274,14 +1298,15 @@ final class AppState {
         }
     }
 
-    /// fromCache separates provenance from age: cache-loaded data must never
-    /// re-fire notifications (a relaunch would re-announce an alarm the user
-    /// already saw) and must never be written back to the cache it came from.
-    func applySnapshot(_ snapshot: UsageSnapshot, stale: Bool, fromCache: Bool) {
+    /// fromCache is provenance: cache-loaded data must never re-fire
+    /// notifications (a relaunch would re-announce an alarm the user already
+    /// saw) and must never be written back to the cache it came from. Age is
+    /// separate — the UI labels any cached data with its fetchedAt age.
+    func applySnapshot(_ snapshot: UsageSnapshot, fromCache: Bool) {
         latestSnapshot = snapshot
         paceReadings = snapshot.lanes.map { PaceCalculator.reading(for: $0, now: Date()) }
         status = .ok
-        isShowingCachedData = stale || fromCache
+        isShowingCachedData = fromCache
         if !fromCache { lastSuccessAt = snapshot.fetchedAt }
     }
 
@@ -1304,7 +1329,7 @@ final class AppState {
                     fetcher.hideLoginWindow()
                     if case .success(let lanes) = outcome {
                         applySnapshot(UsageSnapshot(lanes: lanes, extraUsage: nil, fetchedAt: Date()),
-                                      stale: false, fromCache: false)
+                                      fromCache: false)
                     }
                     return
                 }
@@ -1440,9 +1465,9 @@ public struct SnapshotCache {
         // Render last-good numbers immediately on launch; the first live
         // fetch replaces them. fromCache: true — cache-loaded data must never
         // notify (Task 10) or be re-written to the cache it just came from,
-        // regardless of how fresh it is. Age-based staleness is separate.
+        // regardless of how fresh it is. The UI labels it with its age.
         if let cached = cache.load() {
-            applySnapshot(cached, stale: cached.isStale(now: Date()), fromCache: true)
+            applySnapshot(cached, fromCache: true)
         }
 ```
 
@@ -1509,10 +1534,11 @@ Run the filter again → PASS.
 
 - [ ] **Step 2: MenuView updates.** In `LaneRow`:
   - lane title: `Text(reading.lane.kind.displayName)` → `Text(reading.lane.effectiveDisplayName)`.
-  - the projection line's condition changes from `if reading.isAheadOfPace, ...` to projection-presence (projections now exist for behind-pace lanes too, where "resets first" is the informative, calming answer). Red only when the cap genuinely lands before the reset:
+  - the projection line's condition changes from `if reading.isAheadOfPace, ...` to the following. Gating on `capBeforeReset || reading.isAlarmed` keeps v1's dropdown density: normal behind-pace lanes show no third line, ahead-of-pace lanes show the red projected-cap warning, and a server-alarmed lane that will nonetheless survive to its reset shows the calming "resets first" answer — the one case where that line earns its space:
 
 ```swift
-            if let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset {
+            if let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset,
+               capBeforeReset || reading.isAlarmed {
                 Text("Projected to hit cap \(PaceFormatter.projectionLabel(capDate: capDate, resetDate: reading.lane.resetDate, capBeforeReset: capBeforeReset))")
                     .font(.system(size: 11))
                     .foregroundStyle(capBeforeReset ? Color.red : Color.secondary)
@@ -1911,7 +1937,7 @@ has already changed shape once; Pace handles both known generations and shows
 last-known values (labeled as cached) if it changes again.
 ```
 
-  - Behavior section: notifications now exist ("one notification when a lane crosses into ahead-of-pace; re-armed when the window resets; requires macOS notification permission"), refresh defaults (2 min API / 6 min browser), stale labeling (10 min).
+  - Behavior section: notifications now exist ("one notification when a lane crosses into ahead-of-pace; re-armed when the window resets; requires macOS notification permission"), refresh defaults (2 min API / 6 min browser), and cached data is always labeled with its age ("cached · Xm ago") — on relaunch and after failed refreshes.
   - Limitations: update accordingly; drop the "notifications are a non-goal" line.
 
 - [ ] **Step 2: Comment sanitation.** Grep for internal codenames: `grep -rn "review finding\|C1\|I1\|I2\|I3\|I4\|I5\|Task [0-9]\|cross-model" Sources/`. For each hit, rewrite the comment to carry the reason itself (the pattern: delete the citation, keep/expand the rationale). Examples:

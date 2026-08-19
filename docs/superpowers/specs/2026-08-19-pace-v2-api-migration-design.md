@@ -148,8 +148,10 @@ browser session").
 
 - **Persisted last-good cache** — `UsageSnapshot` JSON in
   `~/Library/Application Support/Pace/last-usage.json`. Loaded at launch and
-  rendered immediately; rendered on any fetch failure; labeled stale
-  ("cached · Xm ago") once older than 10 minutes. Contains percentages and
+  rendered immediately; rendered on any fetch failure; ANY cache-loaded or
+  post-failure data is labeled with its age ("cached · Xm ago") — an age tag
+  on everything cached is more honest than a binary 10-minute threshold
+  (amended 2026-08-19 during eng review). Contains percentages and
   timestamps only — never credentials (README says so).
 - **Overage row** — dropdown row "Extra usage $X.XX" when the snapshot reports
   extra usage enabled and nonzero (API mode only; the scrape path doesn't
@@ -166,6 +168,11 @@ browser session").
   the old 360s default as "not customized" on first launch and migrates it).
 - Icon and dropdown rendering otherwise unchanged — the pace concept (fill vs
   elapsed tick, red only when it matters) is the product and survives intact.
+  One deliberate density rule (amended 2026-08-19): projections are computed
+  for any lane past the 10-minute guard, but the dropdown's projection line
+  renders only when `capBeforeReset || isAlarmed` — normal behind-pace lanes
+  stay two lines, and the calming "resets first" answer appears exactly when
+  a server-alarmed lane will nonetheless survive to its reset.
 
 ## Signing & distribution
 
@@ -195,7 +202,7 @@ Nothing about the cert enters the repo.
 |---|---|---|
 | No Keychain items at all | browser mode | claude.ai sign-in window (v1 flow) |
 | Items exist, all expired / 401 | `.tokenExpired` | "Open Claude Code and run /login"; last-good shown |
-| Network failure / timeout / 5xx | transient | last-good shown, stale label after 10 min |
+| Network failure / timeout / 5xx | transient | last-good shown, age-labeled |
 | JSON shape unrecognized | `.parseError` | "endpoint may have changed"; last-good shown |
 | Scrape-path failures | unchanged v1 statuses | unchanged |
 
