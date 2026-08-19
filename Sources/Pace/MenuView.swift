@@ -16,6 +16,16 @@ struct MenuView: View {
                 Divider()
             }
 
+            if let extra = appState.latestSnapshot?.extraUsage, extra.isEnabled, extra.dollarsUsed > 0 {
+                HStack {
+                    Text("Extra usage").font(.system(size: 12.5)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "$%.2f", extra.dollarsUsed)).font(.system(size: 12.5, weight: .semibold))
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                Divider()
+            }
+
             statusRow
 
             Divider()
@@ -30,13 +40,18 @@ struct MenuView: View {
 
     @ViewBuilder
     private var statusRow: some View {
+        if appState.isShowingCachedData, appState.status == .ok {
+            Text("Showing cached data\(appState.latestSnapshot.map { " · fetched \(PaceFormatter.ageLabel(since: $0.fetchedAt, now: Date()))" } ?? "")")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 6)
+        }
         switch appState.status {
         case .needsLogin:
             Button("Sign in to claude.ai") { appState.presentLogin() }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .tokenExpired:
-            Text("Claude Code login expired. Open Claude Code and run /login. Showing last known values.")
+            Text("Claude Code login expired — open Claude Code and run /login. Showing last known values.")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .transient(let detail):
@@ -63,7 +78,7 @@ private struct LaneRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(reading.lane.kind.displayName).font(.system(size: 12.5)).foregroundStyle(.secondary)
+                Text(reading.lane.effectiveDisplayName).font(.system(size: 12.5)).foregroundStyle(.secondary)
                 Spacer()
                 Text("\(reading.lane.percentUsed)%")
                     .font(.system(size: 12.5, weight: .semibold))
@@ -98,9 +113,11 @@ private struct LaneRow: View {
             }
             .font(.system(size: 11)).foregroundStyle(.secondary)
 
-            if reading.isAheadOfPace, let capDate = reading.projectedCapDate {
-                Text("Projected to hit cap \(PaceFormatter.projectionLabel(capDate: capDate, resetDate: reading.lane.resetDate))")
-                    .font(.system(size: 11)).foregroundStyle(.red)
+            if let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset,
+               capBeforeReset || reading.isAlarmed {
+                Text("Projected to hit cap \(PaceFormatter.projectionLabel(capDate: capDate, resetDate: reading.lane.resetDate, capBeforeReset: capBeforeReset))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(capBeforeReset ? Color.red : Color.secondary)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)

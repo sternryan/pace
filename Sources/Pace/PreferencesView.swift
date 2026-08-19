@@ -8,6 +8,9 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
+            LabeledContent("Data source",
+                           value: appState.mode == .api ? "Claude Code API" : "claude.ai browser session")
+
             Stepper(value: $appState.refreshInterval, in: 60...1800, step: 60) {
                 Text("Refresh every \(Int(appState.refreshInterval / 60)) min")
             }

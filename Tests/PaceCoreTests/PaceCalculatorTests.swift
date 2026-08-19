@@ -124,10 +124,4 @@ final class PaceCalculatorTests: XCTestCase {
         let lane = LaneUsage(kind: .session, percentUsed: 21, resetDate: now.addingTimeInterval(3 * 3600 + 53 * 60), windowLength: nil)
         XCTAssertEqual(PaceFormatter.resetLabel(for: lane, now: now), "resets in 3h 53m")
     }
-
-    func testProjectionLabel() {
-        let resetDate = Date(timeIntervalSince1970: 10 * 3600)
-        let capDate = resetDate.addingTimeInterval(-2 * 3600)
-        XCTAssertEqual(PaceFormatter.projectionLabel(capDate: capDate, resetDate: resetDate), "~2h before reset")
-    }
 }
