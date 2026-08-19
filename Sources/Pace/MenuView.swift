@@ -67,7 +67,7 @@ private struct LaneRow: View {
                 Spacer()
                 Text("\(reading.lane.percentUsed)%")
                     .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(reading.isAheadOfPace ? Color.red : Color.primary)
+                    .foregroundStyle(reading.isAlarmed ? Color.red : Color.primary)
             }
 
             GeometryReader { geo in
@@ -78,7 +78,7 @@ private struct LaneRow: View {
                     // made the fill and the pace tick invisible in light mode.
                     // Same fix IconRenderer already carries (review finding I2).
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(reading.isAheadOfPace ? Color.red : Color.primary)
+                        .fill(reading.isAlarmed ? Color.red : Color.primary)
                         .frame(width: geo.size.width * CGFloat(reading.lane.percentUsed) / 100)
                     if let percentElapsed = reading.percentElapsed {
                         Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(0.9))

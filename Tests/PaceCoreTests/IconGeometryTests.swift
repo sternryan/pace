@@ -25,7 +25,7 @@ final class IconGeometryTests: XCTestCase {
 
     func testGeometryMarksHotWhenAheadOfPace() {
         let lane = LaneUsage(kind: .session, percentUsed: 70, resetDate: Date(), windowLength: 5 * 3600)
-        let reading = PaceReading(lane: lane, percentElapsed: 40, isAheadOfPace: true, projectedCapDate: Date())
+        let reading = PaceReading(lane: lane, percentElapsed: 40, isAheadOfPace: true, projectedCapDate: Date(), isAlarmed: true)
         let geo = IconGeometry.barGeometry(for: reading)
         XCTAssertTrue(geo.isHot)
     }

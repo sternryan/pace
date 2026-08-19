@@ -15,7 +15,7 @@ public enum IconGeometry {
         BarGeometry(
             fillFraction: Double(reading.lane.percentUsed) / 100.0,
             tickFraction: reading.percentElapsed.map { Double($0) / 100.0 },
-            isHot: reading.isAheadOfPace
+            isHot: reading.isAlarmed
         )
     }
 }
