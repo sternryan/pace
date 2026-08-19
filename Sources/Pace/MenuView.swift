@@ -91,7 +91,6 @@ private struct LaneRow: View {
                     // Semantic colors, not hardcoded near-white: the popover
                     // background follows the system appearance, so white-on-white
                     // made the fill and the pace tick invisible in light mode.
-                    // Same fix IconRenderer already carries (review finding I2).
                     RoundedRectangle(cornerRadius: 2)
                         .fill(reading.isAlarmed ? Color.red : Color.primary)
                         .frame(width: geo.size.width * CGFloat(reading.lane.percentUsed) / 100)
@@ -145,8 +144,8 @@ private struct MenuActionRow: View {
 
 #if DEBUG
 // Mock hot-lane data for visual verification — replaces hardcoding a
-// LaneUsage into AppState.init and reverting it afterward (review finding:
-// that approach risked shipping a forgotten test edit).
+// LaneUsage into AppState.init and reverting it afterward, which risked
+// shipping a forgotten test edit.
 #Preview("Hot lane") {
     let now = Date()
     let hotLane = LaneUsage(kind: .session, percentUsed: 70, resetDate: now.addingTimeInterval(3600), windowLength: 5 * 3600)

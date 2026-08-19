@@ -3,7 +3,8 @@ import WebKit
 import PaceCore
 
 enum SessionWindow {
-    /// Confirmed via Anthropic's support docs (Task 6 research):
+    /// Confirmed via Anthropic's support docs
+    /// (see docs/superpowers/research/live-usage-page-notes.md):
     /// https://support.claude.com/en/articles/9797557-usage-limit-best-practices
     /// "...how much of your plan's five-hour session limit you've used thus far"
     /// Applies to Pro/Max/Team/seat-based Enterprise plans.
@@ -21,7 +22,7 @@ final class UsageFetcher: NSObject {
     private var isRefreshing = false
     /// True while the sign-in window is on screen. There is only one WKWebView,
     /// so navigating it during sign-in throws away whatever the user has typed
-    /// (review finding C1) — every navigating path checks this first.
+    /// — every navigating path checks this first.
     private(set) var isPresentingLogin = false
 
     override init() {
@@ -138,7 +139,7 @@ final class UsageFetcher: NSObject {
         return (try? await webView.evaluateJavaScript(script) as? Bool) ?? false
     }
 
-    /// Selectors confirmed live against claude.ai's DOM in Task 6's research
+    /// Selectors confirmed live against claude.ai's DOM
     /// (docs/superpowers/research/live-usage-page-notes.md), preferred over
     /// text matching since they don't depend on the signed-in user's display
     /// name or on Settings/Usage label text staying stable.
@@ -165,7 +166,7 @@ final class UsageFetcher: NSObject {
     /// conversation sidebar, and the extractor takes the first line-anchored
     /// match of each lane anchor — so a chat titled exactly "Fable" would win
     /// over the real lane header. Slice from the panel's own heading, which is
-    /// how Task 6's research captured this text in the first place. Stable text
+    /// how the live-usage-page research notes captured this text. Stable text
     /// anchor, same category as the lane anchors, not a churn-prone class name.
     static func slicedToUsagePanel(_ bodyText: String) -> String {
         guard let anchor = bodyText.range(of: "Plan usage limits") else { return bodyText }

@@ -10,6 +10,10 @@ with 4 hours left in a 7-day window. Pace computes that and shows it as three
 small bars in your menu bar, going red only when a lane is burning faster than
 its window allows.
 
+In v2, Pace automatically chooses between two modes: it reads the usage API
+directly if Claude Code is installed, or falls back to a browser-session scrape
+otherwise.
+
 ## What it looks like
 
 Three stacked bars in the menu bar, one per lane (current session, all-models
@@ -17,32 +21,61 @@ week, Fable week). Each bar fills to the percent used, with a tick mark at the
 percent of the window that has elapsed. Monochrome (matches Battery/WiFi/
 Control Center) except a lane that's ahead of pace, which turns red — the only
 color the icon ever shows. Click the icon for a dropdown with exact numbers,
-reset times, and (for an ahead-of-pace lane) a projected time-to-cap.
+reset times, and (for an ahead-of-pace lane) a projected time-to-cap. If
+overage spend is enabled and nonzero, the dropdown also shows an "Extra usage"
+dollar row. Preferences shows which data source is active.
 
-## Why it works the way it does
+## Behavior
 
-There's no public API or documented endpoint for these usage numbers — a live
-network trace of the Settings → Usage panel turned up no discoverable REST/
-GraphQL call carrying them, only analytics beacons. The only reliable way to
-get this data is to read the *rendered* page. So Pace keeps a hidden WKWebView
-signed into claude.ai (using the same cookie jar you'd get from Safari/Chrome
-signing in), navigates it to the Usage panel on a timer, and reads the text
-via `document.body.innerText`. See `docs/superpowers/specs/` and
-`docs/superpowers/research/` for the full design rationale and the DOM
-research that pinned down stable selectors.
+- **Refresh rates:** Pace refreshes every 2 minutes in API mode and every 6
+  minutes in browser mode.
+- **Notifications:** Pace sends a native macOS notification when a lane crosses
+  into ahead-of-pace. This is re-armed when the window resets or the lane drops
+  back below the pace threshold. Requires macOS notification permission.
+- **Cached data:** To ensure transparency, any data shown from the local cache
+  (shown on relaunch or after failed refreshes) is labeled with its age
+  (e.g., "cached · 5m ago").
 
-This means Pace is inherently coupled to claude.ai's current page structure.
-If Anthropic changes the Settings → Usage markup, Pace will show a dimmed icon
-with a "couldn't refresh" note (never a wrong number, never a crash) until the
-selectors are updated.
+## How it gets the data
 
-## Privacy
+**API mode (primary).** Pace reads the undocumented `api.anthropic.com/api/oauth/usage`
+endpoint. The required Bearer token is read natively from the macOS Keychain
+from the Claude Code credentials. This mode is used automatically whenever
+Claude Code credentials are present.
 
-Everything runs locally. Pace's only network traffic is the same claude.ai
-requests your normal browser session would make in the hidden WKWebView — it
-does not send your usage data, session cookies, or anything else to any
-third-party service. Signing out from Preferences clears the WKWebView's
+**Browser mode (fallback).** Without Claude Code credentials, Pace falls back to
+v1's method: reading the rendered claude.ai Settings → Usage page in a hidden
+WKWebView. On first launch in this mode, a sign-in window will open.
+
+In both modes, Pace is designed to fail gracefully. If the API endpoint shape
+changes (API mode) or the page DOM changes (browser mode), Pace will show a
+dimmed icon and display the last-known values (labeled as cached). It will
+never show a wrong number and will never crash. See `docs/superpowers/specs/`
+and `docs/superpowers/research/` for the design rationale and research.
+
+## Security and data
+
+**API mode.** Pace reads Claude Code's OAuth access token from the macOS
+Keychain (service `Claude Code-credentials`, including suffixed variants some
+installs create). The token stays in memory and is sent only to
+`api.anthropic.com` over HTTPS. Pace never writes it to disk, never logs it,
+and never refreshes it — Claude Code owns token renewal. The Keychain read is
+a native Security.framework call, so the access grant macOS asks you for is
+scoped to Pace.app specifically — not to a shared CLI binary that any local
+process could then use.
+
+**Browser mode.** Without Claude Code credentials, Pace falls back to reading
+the rendered claude.ai Settings → Usage page in a hidden WKWebView, exactly as
+v1 did. Its only network traffic is the same claude.ai requests your normal
+browser session would make. Signing out from Preferences clears the WKWebView
 session data.
+
+**On disk.** The cache at `~/Library/Application Support/Pace/last-usage.json`
+holds the last usage percentages and timestamps. It never contains credentials.
+
+Pace isn't affiliated with Anthropic. The usage endpoint is undocumented and
+has already changed shape once; Pace handles both known generations and shows
+last-known values (labeled as cached) if it changes again.
 
 ## Install
 
@@ -56,13 +89,12 @@ make install
 ```
 
 This builds a release binary, wraps it into `~/Applications/Pace.app`, and
-ad-hoc code-signs it (no Apple Developer account needed, no notarization —
-this isn't distributed via the App Store). Launch it once from
-`~/Applications`, then turn on **Launch at Login** from Pace's Preferences if
-you want it to persist across reboots.
-
-On first launch — or whenever your claude.ai session expires — Pace opens a
-sign-in window. Sign in once; cookies persist after that.
+signs it with a stable local self-signed certificate (created automatically by
+`make app`/`make install`) so the macOS Keychain grant survives rebuilds.
+Ad-hoc signing is used as a fallback. This is not distributed via the App Store
+and is not notarized. Launch it once from `~/Applications`, then turn on
+**Launch at Login** from Pace's Preferences if you want it to persist across
+reboots.
 
 ## Development
 
@@ -82,14 +114,11 @@ The codebase is split into two targets:
 
 ## Limitations
 
-- Scrapes a page Anthropic doesn't guarantee the stability of. Selector
-  breakage is a designed-for failure mode (dimmed icon, last-known values),
-  not a hypothetical, but it can still happen.
-- No App Store distribution or notarization — you're trusting a locally built,
-  ad-hoc-signed binary. Build it yourself from source rather than running an
-  unsigned prebuilt binary from someone else.
-- Native notifications for ahead-of-pace alerts are a deliberate non-goal for
-  now (see `TODOS.md`) — the signal is passive, icon-color only.
+- Browser mode is subject to DOM churn; if Anthropic changes the Settings →
+  Usage markup, the scraper may fail until updated.
+- No App Store distribution or notarization — you're trusting a locally built
+  binary signed with a local certificate. Build it yourself from source rather
+  than running an unsigned prebuilt binary from someone else.
 
 ## License
 

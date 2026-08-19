@@ -27,8 +27,7 @@ struct PreferencesView: View {
                         launchAtLoginError = nil
                     } catch {
                         // Registration failed — revert to the real status
-                        // instead of showing a state that isn't true
-                        // (review finding, cross-model: "the toggle can lie").
+                        // instead of showing a state that isn't true.
                         launchAtLogin = SMAppService.mainApp.status == .enabled
                         launchAtLoginError = error.localizedDescription
                     }

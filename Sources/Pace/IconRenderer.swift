@@ -6,7 +6,7 @@ enum IconRenderer {
         // Before the first successful fetch, readings is empty. Draw 3 empty
         // tracks (no fill, no fake numbers) rather than nothing — the spec's
         // "never blank the icon" invariant applies to first launch too, not
-        // just post-fetch failure states (review finding, cross-model).
+        // just post-fetch failure states.
         let geometries = readings.isEmpty
             ? Array(repeating: BarGeometry(fillFraction: 0, tickFraction: nil, isHot: false), count: 3)
             : readings.map(IconGeometry.barGeometry(for:))
@@ -31,7 +31,7 @@ enum IconRenderer {
         // hardcoded white/grey so non-hot bars stay legible even when the
         // whole image can't be template mode (the hot bar needs literal
         // red). Hardcoded values would go fixed-near-white and vanish
-        // against a light menu bar — review finding, cross-model.
+        // against a light menu bar.
         for (index, geo) in geometries.enumerated() {
             // Top-to-bottom in the icon must match the dropdown's list order
             // (session, all-models week, Fable week) — the dropdown renders

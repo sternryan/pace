@@ -11,7 +11,7 @@ public enum UsagePanelTextExtractor {
         // Line-anchored match, not a bare substring: "Fable" as a lane header
         // stands alone on its own line, but claude.ai's own "Fable 5 is still
         // included with your Max plan." banner also contains the substring
-        // "Fable" and would otherwise be matched first — see review finding.
+        // "Fable" and would otherwise be matched first.
         let found = laneAnchors.compactMap { kind, anchor -> (LaneKind, Range<String.Index>)? in
             let pattern = "(?m)^\(NSRegularExpression.escapedPattern(for: anchor))$"
             return panelText.range(of: pattern, options: .regularExpression).map { (kind, $0) }

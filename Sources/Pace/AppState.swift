@@ -71,7 +71,7 @@ final class AppState {
 
         // Render last-good numbers immediately on launch; the first live
         // fetch replaces them. fromCache: true — cache-loaded data must never
-        // notify (Task 10) or be re-written to the cache it just came from,
+        // notify or be re-written to the cache it just came from,
         // regardless of how fresh it is. The UI labels it with its age.
         if let cached = cache.load() {
             applySnapshot(cached, fromCache: true)
