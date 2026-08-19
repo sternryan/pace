@@ -38,18 +38,22 @@ struct KeychainCredentialStore {
     /// Attributes-only (pass 1): costs nothing, decrypts nothing, prompts for
     /// nothing — safe to call synchronously at launch for mode selection.
     func hasAnyItem() -> Bool {
-        !matchingServiceNames().isEmpty
+        !matchingItemRefs().isEmpty
     }
 
     /// Two passes, deliberately. kSecAttrService has no prefix query, so
-    /// discovery must scan — but a single scan with kSecReturnData would ask
-    /// the Keychain to DECRYPT every generic password on the machine (hundreds
-    /// of items), raising one authorization prompt per item Pace isn't
-    /// granted. Pass 1 requests attributes only (no decryption, no prompts)
-    /// to find the matching service names; pass 2 requests data for exactly
-    /// those services, so macOS prompts about the Claude Code item and
-    /// nothing else.
-    private func matchingServiceNames() -> [String] {
+    /// discovery must scan — but scanning with kSecReturnData is off the
+    /// table twice over: macOS rejects kSecMatchLimitAll combined with
+    /// kSecReturnData outright (errSecParam -50, verified on macOS 15 — batch
+    /// decryption is not a thing), and even per-item it would touch secrets
+    /// Pace has no business reading. Pass 1 requests attributes only (no
+    /// decryption, no prompts) to find the matching (service, account) pairs;
+    /// pass 2 reads each matched item INDIVIDUALLY with kSecMatchLimitOne —
+    /// the only form the API decrypts — so macOS prompts about the Claude
+    /// Code items and nothing else. Pinning account as well as service is
+    /// what keeps the duplicate-service trap closed: limit-one by service
+    /// alone would return the first (possibly stale) item.
+    private func matchingItemRefs() -> [(service: String, account: String)] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecMatchLimit as String: kSecMatchLimitAll,
@@ -58,24 +62,30 @@ struct KeychainCredentialStore {
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let items = result as? [[String: Any]] else { return [] }
-        let services = items.compactMap { $0[kSecAttrService as String] as? String }
-            .filter { $0.hasPrefix(Self.servicePrefix) }
-        return Array(Set(services))
+        var seen = Set<String>()
+        var refs: [(String, String)] = []
+        for item in items {
+            guard let service = item[kSecAttrService as String] as? String,
+                  service.hasPrefix(Self.servicePrefix),
+                  let account = item[kSecAttrAccount as String] as? String else { continue }
+            let key = "\(service)\u{0}\(account)"
+            if seen.insert(key).inserted { refs.append((service, account)) }
+        }
+        return refs
     }
 
     private func copyAllMatchingItemPayloads() -> [Data] {
-        matchingServiceNames().flatMap { service -> [Data] in
+        matchingItemRefs().compactMap { ref in
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-                kSecReturnAttributes as String: true,
+                kSecAttrService as String: ref.service,
+                kSecAttrAccount as String: ref.account,
+                kSecMatchLimit as String: kSecMatchLimitOne,
                 kSecReturnData as String: true
             ]
             var result: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-                  let items = result as? [[String: Any]] else { return [] }
-            return items.compactMap { $0[kSecValueData as String] as? Data }
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+            return result as? Data
         }
     }
 }
