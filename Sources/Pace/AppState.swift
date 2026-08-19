@@ -35,6 +35,8 @@ final class AppState {
     private var timer: Timer?
     private var postLoginPollTask: Task<Void, Never>?
     private var isFetching = false // timer + manual refresh can overlap; scrape has its own guard, API needs this one
+    private var notificationGovernor = NotificationGovernor()
+    private let notifier = PaceNotifier()
 
     init(source: UsageSource? = nil, mode: DataSourceMode? = nil) {
         let resolvedMode = mode ?? (store.hasAnyItem() ? .api : .browser)
@@ -140,6 +142,17 @@ final class AppState {
         if !fromCache {
             lastSuccessAt = snapshot.fetchedAt
             cache.save(snapshot)
+        }
+        // Cached data must never notify — a relaunch would re-announce an
+        // alarm the user already saw. fromCache is the provenance flag;
+        // `stale` is only about age.
+        if !fromCache {
+            let alerts = notificationGovernor.alertsFor(readings: paceReadings)
+            if !alerts.isEmpty {
+                Task { @MainActor in
+                    for alert in alerts { await notifier.post(alert) }
+                }
+            }
         }
     }
 
