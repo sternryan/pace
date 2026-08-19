@@ -65,9 +65,12 @@ func testLaneUsageDefaultsPreserveV1CallSites() {
 }
 
 func testLaneUsageDisplayNameOverride() {
+    // The override must actually flow through — a renamed model relabels the
+    // lane. Using a DIFFERENT name than the kind's default so an
+    // implementation that ignores the override can't pass this vacuously.
     let lane = LaneUsage(kind: .fableWeek, percentUsed: 10, resetDate: Date(), windowLength: nil,
-                         severity: .warning, displayNameOverride: "Fable")
-    XCTAssertEqual(lane.effectiveDisplayName, "Fable · week")
+                         severity: .warning, displayNameOverride: "Meridian")
+    XCTAssertEqual(lane.effectiveDisplayName, "Meridian · week")
     let plain = LaneUsage(kind: .fableWeek, percentUsed: 10, resetDate: Date(), windowLength: nil)
     XCTAssertEqual(plain.effectiveDisplayName, "Fable · week")
 }
@@ -79,6 +82,8 @@ Note on `effectiveDisplayName`: when `displayNameOverride` is non-nil AND `kind 
 
 Run: `swift test --filter CoreTypesTests`
 Expected: FAIL — `LaneSeverity` not defined.
+
+Note: `effectiveDisplayName`'s implementation MUST use the override — `"\(displayNameOverride!) · week"` when set on a `.fableWeek` lane. The test uses "Meridian" precisely so `kind.displayName` alone cannot pass it.
 
 - [ ] **Step 3: Implement** — create `Sources/PaceCore/LaneSeverity.swift`:
 
@@ -140,7 +145,9 @@ Also make `LaneKind` Codable (`Sources/PaceCore/LaneKind.swift`): change its dec
 Modify `Sources/PaceCore/FetchStatus.swift` — add the case with its rationale:
 
 ```swift
-public enum FetchStatus: Equatable, Sendable {
+/// Conforms to Error so it can be the Failure type of
+/// Result<UsageSnapshot, FetchStatus> at the UsageSource seam.
+public enum FetchStatus: Error, Equatable, Sendable {
     case ok
     case needsLogin
     /// API mode: Claude Code credentials exist but the token is expired or
@@ -149,6 +156,10 @@ public enum FetchStatus: Equatable, Sendable {
     /// Claude Code and run /login, and showing a claude.ai sign-in window
     /// here would be the wrong instruction.
     case tokenExpired
+    /// Network unreachable, timeout, or a 5xx — retryable, and distinct from
+    /// `.parseError`: wifi dropping must not be reported as "the endpoint
+    /// shape changed", which is the signal this design specifically watches.
+    case transient(String)
     /// The scrape click-through broke for a reason OTHER than being signed
     /// out (e.g. claude.ai renamed a button). Kept separate so the dropdown
     /// never tells you to sign in when you already are.
@@ -157,11 +168,15 @@ public enum FetchStatus: Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 4: Run the full suite** — `swift test`. Expected: PASS (existing tests compile via defaulted params). The app target will still compile because `IconRenderer.render`'s `switch status` gains a case — check: it switches with `case .needsLogin, .navigationFailed, .parseError:`; ADD `.tokenExpired` to that stale list in `Sources/Pace/IconRenderer.swift` (stale treatment is correct for it). `MenuView.statusRow` also switches exhaustively — add a temporary case now (Task 9 replaces it):
+- [ ] **Step 4: Run the full suite** — `swift test`. Expected: PASS (existing tests compile via defaulted params). The app target will still compile because `IconRenderer.render`'s `switch status` gains cases — check: it switches with `case .needsLogin, .navigationFailed, .parseError:`; ADD `.tokenExpired, .transient` to that stale list in `Sources/Pace/IconRenderer.swift` (stale treatment is correct for both). `MenuView.statusRow` also switches exhaustively — add two temporary cases now (Task 9 replaces the whole statusRow):
 
 ```swift
 case .tokenExpired:
     Text("Claude Code login expired. Open Claude Code and run /login. Showing last known values.")
+        .font(.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, 16).padding(.vertical, 6)
+case .transient(let detail):
+    Text("Couldn't reach the usage API (\(detail)). Showing last known values.")
         .font(.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 16).padding(.vertical, 6)
 ```
@@ -288,11 +303,14 @@ git commit -m "feat(core): ExtraUsage + UsageSnapshot codable cache format"
 **Files:**
 - Modify: `Sources/PaceCore/PaceCalculator.swift`
 - Modify: `Sources/PaceCore/PaceReading.swift`
+- Modify: `Sources/PaceCore/IconGeometry.swift`
+- Modify: `Sources/Pace/MenuView.swift`
+- Modify: `Tests/PaceCoreTests/IconGeometryTests.swift` (one constructor call gains `isAlarmed: true`)
 - Test: `Tests/PaceCoreTests/PaceCalculatorTests.swift` (append)
 
 **Interfaces:**
 - Consumes: `LaneUsage` (Task 1).
-- Produces: `PaceReading` gains `isAlarmed: Bool` (ahead-of-pace OR server severity alarming) and `capBeforeReset: Bool?` (nil when no projection). `PaceCalculator.reading(for:now:)` signature unchanged. New constant `PaceCalculator.minimumElapsedForVerdict: TimeInterval = 10 * 60`.
+- Produces: `PaceReading` gains `isAlarmed: Bool` (ahead-of-pace OR server severity alarming) and `capBeforeReset: Bool?` (nil when no projection). Projections are computed for ANY lane past the elapsed guard with nonzero usage — not only ahead-of-pace lanes. This is deliberate: for an ahead-of-pace lane, cap-before-reset is algebraically always true (ahead MEANS the projected 100% lands inside the window), so "(resets first)" is only ever informative on a behind-pace lane — the calming "you don't need to care" answer. `PaceCalculator.reading(for:now:)` signature unchanged. New constant `PaceCalculator.minimumElapsedForVerdict: TimeInterval = 10 * 60`.
 
 - [ ] **Step 1: Write the failing tests** — append to `Tests/PaceCoreTests/PaceCalculatorTests.swift`:
 
@@ -332,17 +350,32 @@ func testServerSeverityForcesAlarmEvenWhenBehindPace() {
     XCTAssertTrue(reading.isAlarmed)      // server says critical — server wins
 }
 
-func testResetsFirstWhenPaceIsBarelyAhead() {
-    // 30% used at 25% elapsed of a 7-day window: ahead, but the projected
-    // cap lands after the reset — the user doesn't need to care.
+func testBehindPaceLaneGetsResetsFirstProjection() {
+    // 20% used at 25% elapsed of a 7-day window: behind pace, so the
+    // projected cap lands AFTER the reset — the projection exists to say
+    // "you don't need to care". (For an ahead-of-pace lane, cap-before-reset
+    // is always true by construction, so this calming state only occurs on
+    // behind-pace lanes.)
     let now = Date()
     let windowLength: TimeInterval = 7 * 24 * 3600
-    let lane = LaneUsage(kind: .allModelsWeek, percentUsed: 30,
+    let lane = LaneUsage(kind: .allModelsWeek, percentUsed: 20,
+                         resetDate: now.addingTimeInterval(windowLength * 0.75),
+                         windowLength: windowLength)
+    let reading = PaceCalculator.reading(for: lane, now: now)
+    XCTAssertFalse(reading.isAheadOfPace)
+    XCTAssertNotNil(reading.projectedCapDate)
+    XCTAssertEqual(reading.capBeforeReset, false)
+}
+
+func testAheadOfPaceLaneProjectsCapBeforeReset() {
+    let now = Date()
+    let windowLength: TimeInterval = 7 * 24 * 3600
+    let lane = LaneUsage(kind: .allModelsWeek, percentUsed: 40,
                          resetDate: now.addingTimeInterval(windowLength * 0.75),
                          windowLength: windowLength)
     let reading = PaceCalculator.reading(for: lane, now: now)
     XCTAssertTrue(reading.isAheadOfPace)
-    XCTAssertEqual(reading.capBeforeReset, false)
+    XCTAssertEqual(reading.capBeforeReset, true)
 }
 ```
 
@@ -402,9 +435,13 @@ public enum PaceCalculator {
         let percentElapsed = Int((elapsed / windowLength) * 100)
         let ahead = elapsed >= minimumElapsedForVerdict && lane.percentUsed > percentElapsed
 
+        // Projection is decoupled from the ahead verdict: an ahead-of-pace
+        // lane's cap always lands before the reset (that's what ahead means),
+        // so the "(resets first)" answer — the calming one — can only come
+        // from a behind-pace lane. Both need the projection.
         var projectedCapDate: Date? = nil
         var capBeforeReset: Bool? = nil
-        if ahead, elapsed > 0, lane.percentUsed > 0 {
+        if elapsed >= minimumElapsedForVerdict, lane.percentUsed > 0 {
             let ratePerSecond = Double(lane.percentUsed) / elapsed
             let secondsTo100 = 100.0 / ratePerSecond
             let cap = windowStart.addingTimeInterval(secondsTo100)
@@ -420,7 +457,12 @@ public enum PaceCalculator {
 }
 ```
 
-- [ ] **Step 4: Switch consumers from `isAheadOfPace` to `isAlarmed`** — in `Sources/PaceCore/IconGeometry.swift` change `isHot: reading.isAheadOfPace` to `isHot: reading.isAlarmed`. In `Sources/Pace/MenuView.swift`'s `LaneRow`, replace all three `reading.isAheadOfPace` reads with `reading.isAlarmed` (percent color, bar fill color, and the projection-line condition `if reading.isAheadOfPace, let capDate` → `if reading.isAheadOfPace, let capDate` stays — the projection only exists when locally ahead; only the two COLOR reads change). Run `swift test && swift build`.
+- [ ] **Step 4: Switch consumers from `isAheadOfPace` to `isAlarmed`** — three precise changes:
+  1. `Sources/PaceCore/IconGeometry.swift`: change `isHot: reading.isAheadOfPace` to `isHot: reading.isAlarmed`.
+  2. `Sources/Pace/MenuView.swift` `LaneRow`: change the two COLOR reads — the percent `Text` foregroundStyle and the bar-fill `RoundedRectangle` fill — from `reading.isAheadOfPace` to `reading.isAlarmed`. Leave the projection-line `if reading.isAheadOfPace, let capDate` condition untouched here (Task 9 replaces that whole line with the capBeforeReset-aware version).
+  3. `Tests/PaceCoreTests/IconGeometryTests.swift`: the test that constructs `PaceReading(lane: lane, percentElapsed: 40, isAheadOfPace: true, projectedCapDate: Date())` and asserts `geo.isHot` must now pass `isAlarmed: true` explicitly (it's a stored property defaulting to false, so without this the existing test fails). The other constructions in that file assert `isHot == false` and stay correct as-is.
+
+  Run `swift test && swift build`.
 
 - [ ] **Step 5: Run full suite and verify PASS, then commit**
 
@@ -537,6 +579,19 @@ final class ApiUsageNormalizerTests: XCTestCase {
         XCTAssertNil(ApiUsageNormalizer.snapshot(fromJSON: drifted, now: now))
     }
 
+    func testStringPercentIsCoercedNotDropped() throws {
+        // Type drift the endpoint could plausibly ship (67 → "67"): coerce
+        // numeric strings rather than silently dropping the lane; drop only
+        // what genuinely can't be read.
+        let fixture = """
+        {"limits": [
+           {"kind": "session", "percent": "67", "severity": "normal",
+            "resets_at": "2026-08-19T22:50:00+00:00"}]}
+        """.data(using: .utf8)!
+        let snapshot = try XCTUnwrap(ApiUsageNormalizer.snapshot(fromJSON: fixture, now: now))
+        XCTAssertEqual(snapshot.lanes[0].percentUsed, 67)
+    }
+
     func testUnparseableResetDateDropsLaneRatherThanGuessing() throws {
         let fixture = """
         {"limits": [
@@ -635,6 +690,10 @@ public enum ApiUsageNormalizer {
 
     private static func extraUsage(from root: [String: Any]) -> ExtraUsage? {
         if let eu = root["extra_usage"] as? [String: Any] {
+            // used_credits ÷ 100 = dollars is UNVERIFIED against a nonzero
+            // live response (every capture so far reads 0.0) — inferred from
+            // the sibling `spend` object's amount_minor/exponent=2 shape. If
+            // a live overage shows a 100x error, this divisor is the suspect.
             let credits = (eu["used_credits"] as? NSNumber)?.doubleValue ?? 0
             return ExtraUsage(dollarsUsed: credits / 100, isEnabled: eu["is_enabled"] as? Bool ?? false)
         }
@@ -649,8 +708,11 @@ public enum ApiUsageNormalizer {
     // MARK: field coercion
 
     private static func intPercent(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber else { return nil }
-        return Int(number.doubleValue.rounded())
+        if let number = value as? NSNumber { return Int(number.doubleValue.rounded()) }
+        // Coerce numeric strings ("67") — plausible type drift for an
+        // undocumented endpoint; anything else is genuinely unreadable.
+        if let string = value as? String, let parsed = Double(string) { return Int(parsed.rounded()) }
+        return nil
     }
 
     private static func isoDate(_ value: Any?) -> Date? {
@@ -864,6 +926,9 @@ struct KeychainCredentialStore {
         let payloads = copyAllMatchingItemPayloads()
         guard !payloads.isEmpty else { return .none }
         let credentials = payloads.compactMap(ClaudeCodeCredential.parse(itemData:))
+        // Items that exist but don't parse also return .none — this conflates
+        // "no Claude Code" with "unreadable items". Both currently map to the
+        // same remediation; don't build a future mode decision on .none alone.
         guard !credentials.isEmpty else { return .none }
         if let freshest = ClaudeCodeCredential.selectFreshest(from: credentials, now: now) {
             return .found(freshest)
@@ -871,28 +936,47 @@ struct KeychainCredentialStore {
         return .allExpired
     }
 
+    /// Attributes-only (pass 1): costs nothing, decrypts nothing, prompts for
+    /// nothing — safe to call synchronously at launch for mode selection.
     func hasAnyItem() -> Bool {
-        !copyAllMatchingItemPayloads().isEmpty
+        !matchingServiceNames().isEmpty
     }
 
-    private func copyAllMatchingItemPayloads() -> [Data] {
-        // kSecAttrService has no prefix query, so fetch all generic passwords'
-        // attributes+data and filter on the service prefix ourselves. The
-        // attribute list never leaves this function; only matching payloads do.
+    /// Two passes, deliberately. kSecAttrService has no prefix query, so
+    /// discovery must scan — but a single scan with kSecReturnData would ask
+    /// the Keychain to DECRYPT every generic password on the machine (hundreds
+    /// of items), raising one authorization prompt per item Pace isn't
+    /// granted. Pass 1 requests attributes only (no decryption, no prompts)
+    /// to find the matching service names; pass 2 requests data for exactly
+    /// those services, so macOS prompts about the Claude Code item and
+    /// nothing else.
+    private func matchingServiceNames() -> [String] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnAttributes as String: true,
-            kSecReturnData as String: true
+            kSecReturnAttributes as String: true
         ]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let items = result as? [[String: Any]] else { return [] }
-        return items.compactMap { item in
-            guard let service = item[kSecAttrService as String] as? String,
-                  service.hasPrefix(Self.servicePrefix),
-                  let data = item[kSecValueData as String] as? Data else { return nil }
-            return data
+        let services = items.compactMap { $0[kSecAttrService as String] as? String }
+            .filter { $0.hasPrefix(Self.servicePrefix) }
+        return Array(Set(services))
+    }
+
+    private func copyAllMatchingItemPayloads() -> [Data] {
+        matchingServiceNames().flatMap { service -> [Data] in
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: true,
+                kSecReturnData as String: true
+            ]
+            var result: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+                  let items = result as? [[String: Any]] else { return [] }
+            return items.compactMap { $0[kSecValueData as String] as? Data }
         }
     }
 }
@@ -938,11 +1022,11 @@ final class ApiUsageSource: UsageSource {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            return .failure(.parseError("network unreachable"))
+            return .failure(.transient("network unreachable"))
         }
 
         guard let http = response as? HTTPURLResponse else {
-            return .failure(.parseError("unexpected response"))
+            return .failure(.transient("unexpected response"))
         }
         if http.statusCode == 401 || http.statusCode == 403 {
             // Expiry math said the token was fresh but the server disagrees
@@ -950,7 +1034,10 @@ final class ApiUsageSource: UsageSource {
             return .failure(.tokenExpired)
         }
         guard (200..<300).contains(http.statusCode) else {
-            return .failure(.parseError("usage request failed (HTTP \(http.statusCode))"))
+            // 5xx and friends are retryable server trouble, NOT shape churn —
+            // .parseError is reserved for "the endpoint changed", the signal
+            // this design specifically watches for.
+            return .failure(.transient("usage request failed (HTTP \(http.statusCode))"))
         }
 
         guard let snapshot = ApiUsageNormalizer.snapshot(fromJSON: data, now: Date()) else {
@@ -981,7 +1068,7 @@ git commit -m "feat: native Keychain credential store + ApiUsageSource"
 
 **Interfaces:**
 - Consumes: `UsageSource`, `ApiUsageSource`, `KeychainCredentialStore` (Task 6); existing `UsageFetcher`.
-- Produces: `enum DataSourceMode { case api, browser }`; `AppState.mode: DataSourceMode`; `AppState.applySnapshot(_ snapshot: UsageSnapshot, stale: Bool)` (Task 8 consumes); `AppState.latestSnapshot: UsageSnapshot?`. `UsageFetcher` gains `func fetchSnapshot() async -> Result<UsageSnapshot, FetchStatus>` and loses the delegate protocol.
+- Produces: `enum DataSourceMode { case api, browser }`; `AppState.mode: DataSourceMode` (private(set) var — browser mode upgrades to API on manual refresh when credentials appear); `AppState.applySnapshot(_ snapshot: UsageSnapshot, stale: Bool, fromCache: Bool)` (Task 8 consumes; `fromCache` distinguishes provenance from age — cache-loaded data must never notify or re-save); `AppState.latestSnapshot: UsageSnapshot?`. `UsageFetcher` gains `func fetchSnapshot() async -> ScrapeOutcome` and loses the delegate protocol.
 
 - [ ] **Step 1: Convert `UsageFetcher` from delegate to result-returning.** In `Sources/Pace/UsageFetcher.swift`: delete the `UsageFetcherDelegate` protocol and the `weak var delegate` property. Change the private `scrape()` so that instead of calling `delegate?...` it returns the outcome, and add a public async API. Replace `refresh()`/`scrapeCurrentPage()`/`scrape()` with:
 
@@ -1097,7 +1184,11 @@ final class AppState {
     private(set) var lastSuccessAt: Date?
     private(set) var latestSnapshot: UsageSnapshot?
     private(set) var isShowingCachedData = false
-    let mode: DataSourceMode
+    /// Upgrades browser → api on manual refresh if Claude Code credentials
+    /// appear (the user installed Claude Code while Pace was running). Never
+    /// downgrades — an expired token is a remediation message, not a mode
+    /// switch.
+    private(set) var mode: DataSourceMode
 
     // Mode-dependent default; a user-customized value still wins (see
     // migration note in init). API mode polls faster because a refresh is
@@ -1106,13 +1197,14 @@ final class AppState {
         didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
     }
 
-    private let source: UsageSource
-    private let scrapeSource: ScrapeUsageSource? // non-nil only in browser mode
+    private let store = KeychainCredentialStore()
+    private var source: UsageSource
+    private var scrapeSource: ScrapeUsageSource? // non-nil only in browser mode
     private var timer: Timer?
     private var postLoginPollTask: Task<Void, Never>?
+    private var isFetching = false // timer + manual refresh can overlap; scrape has its own guard, API needs this one
 
     init(source: UsageSource? = nil, mode: DataSourceMode? = nil) {
-        let store = KeychainCredentialStore()
         let resolvedMode = mode ?? (store.hasAnyItem() ? .api : .browser)
         self.mode = resolvedMode
 
@@ -1129,11 +1221,19 @@ final class AppState {
         }
 
         // v1 wrote refreshInterval unconditionally, so an existing 360 can't
-        // be told apart from "user chose 360" — treat 360 as uncustomized
-        // and migrate it to the mode default once.
-        let stored = UserDefaults.standard.double(forKey: "refreshInterval")
+        // be told apart from "user chose 360" — migrate ONCE (guarded by a
+        // marker key), otherwise every launch would clobber a deliberately
+        // chosen 360 back to the API-mode default.
+        let defaults = UserDefaults.standard
         let modeDefault: TimeInterval = resolvedMode == .api ? 120 : 360
-        self.refreshInterval = (stored > 0 && stored != 360) ? stored : modeDefault
+        let stored = defaults.double(forKey: "refreshInterval")
+        if !defaults.bool(forKey: "didMigrateRefreshIntervalV2") {
+            defaults.set(true, forKey: "didMigrateRefreshIntervalV2")
+            self.refreshInterval = (stored > 0 && stored != 360) ? stored : modeDefault
+            defaults.set(self.refreshInterval, forKey: "refreshInterval")
+        } else {
+            self.refreshInterval = stored > 0 ? stored : modeDefault
+        }
 
         startTimer()
         refreshNow()
@@ -1147,14 +1247,25 @@ final class AppState {
     }
 
     func refreshNow() {
+        // Spec: mode is re-evaluated on manual refresh, upgrade-only. The
+        // check is attributes-only (prompt-free), so it's safe every call.
+        if mode == .browser, store.hasAnyItem() {
+            mode = .api
+            source = ApiUsageSource(store: store)
+            scrapeSource = nil
+        }
         Task { await performFetch() }
     }
 
     private func performFetch() async {
+        guard !isFetching else { return }
+        isFetching = true
+        defer { isFetching = false }
+
         guard let result = await source.fetch() else { return } // skipped — leave state as-is
         switch result {
         case .success(let snapshot):
-            applySnapshot(snapshot, stale: false)
+            applySnapshot(snapshot, stale: false, fromCache: false)
         case .failure(let failure):
             status = failure
             // Last-known readings stay rendered; mark them as cached so the
@@ -1163,12 +1274,15 @@ final class AppState {
         }
     }
 
-    func applySnapshot(_ snapshot: UsageSnapshot, stale: Bool) {
+    /// fromCache separates provenance from age: cache-loaded data must never
+    /// re-fire notifications (a relaunch would re-announce an alarm the user
+    /// already saw) and must never be written back to the cache it came from.
+    func applySnapshot(_ snapshot: UsageSnapshot, stale: Bool, fromCache: Bool) {
         latestSnapshot = snapshot
         paceReadings = snapshot.lanes.map { PaceCalculator.reading(for: $0, now: Date()) }
         status = .ok
-        isShowingCachedData = stale
-        if !stale { lastSuccessAt = snapshot.fetchedAt }
+        isShowingCachedData = stale || fromCache
+        if !fromCache { lastSuccessAt = snapshot.fetchedAt }
     }
 
     // MARK: browser-mode only
@@ -1189,7 +1303,8 @@ final class AppState {
                 if let outcome = await fetcher.scrapeCurrentPageOutcome() {
                     fetcher.hideLoginWindow()
                     if case .success(let lanes) = outcome {
-                        applySnapshot(UsageSnapshot(lanes: lanes, extraUsage: nil, fetchedAt: Date()), stale: false)
+                        applySnapshot(UsageSnapshot(lanes: lanes, extraUsage: nil, fetchedAt: Date()),
+                                      stale: false, fromCache: false)
                     }
                     return
                 }
@@ -1199,11 +1314,6 @@ final class AppState {
 
     func openClaudeUsagePage() {
         NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
-    }
-
-    func openClaudeCode() {
-        // Best remediation we can offer for an expired token: surface the
-        // instruction; there is no reliable way to deep-link a terminal app.
     }
 
     func signOut() {
@@ -1222,7 +1332,7 @@ final class AppState {
 }
 ```
 
-Note: initial `status` changed from `.needsLogin` to `.ok` — in API mode "needs claude.ai login" was always wrong, and in browser mode the first fetch immediately sets `.needsLogin` if true. Delete `openClaudeCode()` if unused by Task 9's MenuView (Task 9 decides; keep for now).
+Note: initial `status` changed from `.needsLogin` to `.ok` — in API mode "needs claude.ai login" was always wrong, and in browser mode the first fetch immediately sets `.needsLogin` if true. There is deliberately no `openClaudeCode()` action — the expired-token remediation is the statusRow text; a terminal app can't be reliably deep-linked.
 
 - [ ] **Step 4: Fix compile fallout.** `MenuView.statusRow`'s `.needsLogin` case calls `appState.presentLogin()` — still valid. `PreferencesView`'s "Sign out of claude.ai" button should only show in browser mode: wrap it in `if appState.mode == .browser { ... }`. Run `swift build && swift test` until green.
 
@@ -1328,14 +1438,15 @@ public struct SnapshotCache {
 
 ```swift
         // Render last-good numbers immediately on launch; the first live
-        // fetch replaces them. Stale labeling is age-based, so day-old cache
-        // shows as cached, not as fresh truth.
+        // fetch replaces them. fromCache: true — cache-loaded data must never
+        // notify (Task 10) or be re-written to the cache it just came from,
+        // regardless of how fresh it is. Age-based staleness is separate.
         if let cached = cache.load() {
-            applySnapshot(cached, stale: cached.isStale(now: Date()))
+            applySnapshot(cached, stale: cached.isStale(now: Date()), fromCache: true)
         }
 ```
 
-with `private let cache = SnapshotCache(directory: SnapshotCache.defaultDirectory())` as a stored property. In `applySnapshot`, when `stale == false`, add `cache.save(snapshot)`. In `performFetch`'s failure branch, recompute the label honestly: `isShowingCachedData = latestSnapshot != nil`. Run `swift build && swift test`.
+with `private let cache = SnapshotCache(directory: SnapshotCache.defaultDirectory())` as a stored property. In `applySnapshot`, add `if !fromCache { cache.save(snapshot) }`. Run `swift build && swift test`.
 
 - [ ] **Step 5: Commit**
 
@@ -1352,6 +1463,7 @@ git commit -m "feat: persisted last-good snapshot cache with age-labeled stalene
 - Modify: `Sources/Pace/MenuView.swift`
 - Modify: `Sources/Pace/PreferencesView.swift`
 - Modify: `Sources/PaceCore/PaceFormatter.swift`
+- Modify: `Tests/PaceCoreTests/PaceCalculatorTests.swift` (DELETE its `testProjectionLabel` — it calls the old two-arg `projectionLabel` and would be a hard compile error in the test target; the new three-arg behavior is covered by this task's PaceFormatterTests)
 - Test: `Tests/PaceCoreTests/PaceFormatterTests.swift` (create if absent)
 
 **Interfaces:**
@@ -1397,10 +1509,10 @@ Run the filter again → PASS.
 
 - [ ] **Step 2: MenuView updates.** In `LaneRow`:
   - lane title: `Text(reading.lane.kind.displayName)` → `Text(reading.lane.effectiveDisplayName)`.
-  - projection line becomes (note color: informational when resets-first):
+  - the projection line's condition changes from `if reading.isAheadOfPace, ...` to projection-presence (projections now exist for behind-pace lanes too, where "resets first" is the informative, calming answer). Red only when the cap genuinely lands before the reset:
 
 ```swift
-            if reading.isAheadOfPace, let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset {
+            if let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset {
                 Text("Projected to hit cap \(PaceFormatter.projectionLabel(capDate: capDate, resetDate: reading.lane.resetDate, capBeforeReset: capBeforeReset))")
                     .font(.system(size: 11))
                     .foregroundStyle(capBeforeReset ? Color.red : Color.secondary)
@@ -1438,6 +1550,10 @@ Run the filter again → PASS.
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .tokenExpired:
             Text("Claude Code login expired — open Claude Code and run /login. Showing last known values.")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 16).padding(.vertical, 6)
+        case .transient(let detail):
+            Text("Couldn't reach the usage API (\(detail)). Showing last known values.")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .navigationFailed(let detail):
@@ -1565,6 +1681,11 @@ import Foundation
 public struct LaneAlert: Equatable, Sendable {
     public let kind: LaneKind
     public let message: String
+
+    public init(kind: LaneKind, message: String) {
+        self.kind = kind
+        self.message = message
+    }
 }
 
 /// Edge-armed alerting: one notification per lane when it CROSSES into the
@@ -1585,10 +1706,13 @@ public struct NotificationGovernor {
                 let alreadyNotifiedThisWindow = notified[kind]?.resetDate == reading.lane.resetDate
                 if !alreadyNotifiedThisWindow {
                     notified[kind] = Armed(resetDate: reading.lane.resetDate)
-                    alerts.append(LaneAlert(
-                        kind: kind,
-                        message: "\(reading.lane.effectiveDisplayName) is at \(reading.lane.percentUsed)% and running ahead of its window."
-                    ))
+                    // isAlarmed covers two distinct truths: locally ahead of
+                    // pace, or server-reported critical/exceeded (which can
+                    // fire on a lane that is BEHIND pace). Say the right one.
+                    let message = reading.isAheadOfPace
+                        ? "\(reading.lane.effectiveDisplayName) is at \(reading.lane.percentUsed)% and running ahead of its window."
+                        : "\(reading.lane.effectiveDisplayName) is at \(reading.lane.percentUsed)% — the server reports it \(reading.lane.severity.rawValue)."
+                    alerts.append(LaneAlert(kind: kind, message: message))
                 }
             } else {
                 notified[kind] = nil // dropped below: re-arm
@@ -1609,40 +1733,47 @@ import UserNotifications
 import PaceCore
 
 /// Thin UNUserNotificationCenter wrapper. Permission is requested lazily on
-/// the first alert; denial is tolerated silently — the icon remains the
-/// primary signal and a menu bar utility must not nag for permissions.
+/// the first alert and AWAITED — posting before authorization resolves would
+/// silently drop the first (most important) notification. Denial is tolerated
+/// silently: the icon remains the primary signal and a menu bar utility must
+/// not nag for permissions.
 @MainActor
 final class PaceNotifier {
-    private var requestedPermission = false
-
-    func post(_ alert: LaneAlert) {
+    func post(_ alert: LaneAlert) async {
+        // Bundle guard FIRST: UNUserNotificationCenter.current() itself traps
+        // in a bundle-less process (`swift run` of the bare binary).
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
-        if !requestedPermission {
-            requestedPermission = true
-            center.requestAuthorization(options: [.alert]) { _, _ in }
-        }
+        let granted = (try? await center.requestAuthorization(options: [.alert])) ?? false
+        guard granted else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Pace — ahead of pace"
+        content.title = "Pace"
         content.body = alert.message
-        center.add(UNNotificationRequest(identifier: "pace-\(alert.kind.rawValue)-\(UUID().uuidString)",
-                                         content: content, trigger: nil))
+        try? await center.add(UNNotificationRequest(identifier: "pace-\(alert.kind.rawValue)-\(UUID().uuidString)",
+                                                    content: content, trigger: nil))
     }
 }
 ```
 
-- [ ] **Step 4: Wire into AppState.** Add stored properties `private var notificationGovernor = NotificationGovernor()` and `private let notifier = PaceNotifier()`. In `applySnapshot`, ONLY when `stale == false`, after computing `paceReadings`:
+(`requestAuthorization` is idempotent — after the first grant/deny it returns the stored answer without re-prompting, so awaiting it on every post is cheap and correct.)
+
+- [ ] **Step 4: Wire into AppState.** Add stored properties `private var notificationGovernor = NotificationGovernor()` and `private let notifier = PaceNotifier()`. In `applySnapshot`, after computing `paceReadings`, gate on PROVENANCE (`fromCache`), not age — a relaunch inside the 10-minute freshness window still must not re-announce an alarm the user already dismissed:
 
 ```swift
         // Cached data must never notify — a relaunch would re-announce an
-        // alarm the user already saw.
-        if !stale {
-            for alert in notificationGovernor.alertsFor(readings: paceReadings) {
-                notifier.post(alert)
+        // alarm the user already saw. fromCache is the provenance flag;
+        // `stale` is only about age.
+        if !fromCache {
+            let alerts = notificationGovernor.alertsFor(readings: paceReadings)
+            if !alerts.isEmpty {
+                Task { @MainActor in
+                    for alert in alerts { await notifier.post(alert) }
+                }
             }
         }
 ```
 
-Caveat for the implementer: `UNUserNotificationCenter.current()` requires a real app bundle; under `swift run` (bare binary) it can crash. Guard the notifier call: wrap `PaceNotifier.post`'s body in `guard Bundle.main.bundleIdentifier != nil else { return }`. Run `swift build && swift test` → green.
+Run `swift build && swift test` → green.
 
 - [ ] **Step 5: Commit**
 
@@ -1703,6 +1834,17 @@ openssl pkcs12 -export -inkey "$TMP_DIR/key.pem" -in "$TMP_DIR/cert.pem" \
 security import "$TMP_DIR/cert.p12" -k "$HOME/Library/Keychains/login.keychain-db" \
   -P pace -T /usr/bin/codesign >/dev/null
 
+# codesign refuses an identity whose chain reaches no trusted root, so a bare
+# import is not enough — without trust settings the ad-hoc fallback would
+# silently take over and the task's entire purpose (grant survives rebuilds)
+# would be defeated while looking done. User-domain trust (no -d) so no admin
+# password is needed; macOS may still show one interactive confirmation.
+if ! security add-trusted-cert -r trustRoot -p codeSign \
+     -k "$HOME/Library/Keychains/login.keychain-db" "$TMP_DIR/cert.pem" >/dev/null 2>&1; then
+  echo "warning: could not set trust for '$CERT_NAME' (interactive confirmation declined or unavailable);" >&2
+  echo "         codesign will fall back to ad-hoc — run 'make app' interactively once to fix." >&2
+fi
+
 echo "$CERT_NAME"
 ```
 
@@ -1721,7 +1863,7 @@ else
 fi
 ```
 
-- [ ] **Step 3: Verify** — `chmod +x Scripts/ensure-signing-cert.sh && make app` and confirm: build succeeds, and `codesign -dv .build/Pace.app 2>&1 | grep -E 'Authority|Signature'` shows either "Pace Local Signing" or (fallback path, with the warning printed) an ad-hoc signature. Note: `security import` may prompt the user; if the environment can't complete it non-interactively, the ad-hoc fallback firing WITH its warning is the acceptable outcome — record which path happened in the task report.
+- [ ] **Step 3: Verify honestly** — `chmod +x Scripts/ensure-signing-cert.sh && make app`, then `codesign -dv .build/Pace.app 2>&1 | grep -E 'Authority|Signature'`. The SUCCESS criterion is "Authority=Pace Local Signing". If the output shows an ad-hoc signature instead (trust-setting needed an interactive confirmation this environment couldn't give), the feature is NOT working — do not report the task as done-and-working. Report it as "cert created, trust pending — ad-hoc fallback active; needs one interactive `make app` from Ryan", and this exact status must flow through to Task 13's verification report and stay visible in the final summary. A silent fallback that reads as success is the failure mode this step exists to prevent.
 
 - [ ] **Step 4: Commit**
 
@@ -1781,7 +1923,7 @@ last-known values (labeled as cached) if it changes again.
   - Any "Task N" references in `Sources/` comments (e.g. UsageFetcher's "Task 6's research", "Task 8's review finding"): rewrite to point at `docs/superpowers/research/live-usage-page-notes.md` or drop.
   Tests are exempt (not shipped surface, and some cite the fixtures' provenance meaningfully) — sanitize only `Sources/`.
 
-- [ ] **Step 3: Verify** — `swift build && swift test` green; `grep -rn "review finding" Sources/` returns nothing.
+- [ ] **Step 3: Verify** — `swift build && swift test` green, then `! grep -rn "review finding" Sources/` (note the `!` — grep exits 1 on no matches, which is the SUCCESS case here; without the negation the check reads as failed exactly when it passed).
 
 - [ ] **Step 4: Commit**
 
