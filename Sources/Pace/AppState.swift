@@ -29,6 +29,7 @@ final class AppState {
     }
 
     private let store = KeychainCredentialStore()
+    private let cache = SnapshotCache(directory: SnapshotCache.defaultDirectory())
     private var source: UsageSource
     private var scrapeSource: ScrapeUsageSource? // non-nil only in browser mode
     private var timer: Timer?
@@ -64,6 +65,14 @@ final class AppState {
             defaults.set(self.refreshInterval, forKey: "refreshInterval")
         } else {
             self.refreshInterval = stored > 0 ? stored : modeDefault
+        }
+
+        // Render last-good numbers immediately on launch; the first live
+        // fetch replaces them. fromCache: true — cache-loaded data must never
+        // notify (Task 10) or be re-written to the cache it just came from,
+        // regardless of how fresh it is. The UI labels it with its age.
+        if let cached = cache.load() {
+            applySnapshot(cached, fromCache: true)
         }
 
         startTimer()
@@ -128,7 +137,10 @@ final class AppState {
         paceReadings = snapshot.lanes.map { PaceCalculator.reading(for: $0, now: Date()) }
         status = .ok
         isShowingCachedData = fromCache
-        if !fromCache { lastSuccessAt = snapshot.fetchedAt }
+        if !fromCache {
+            lastSuccessAt = snapshot.fetchedAt
+            cache.save(snapshot)
+        }
     }
 
     // MARK: browser-mode only
