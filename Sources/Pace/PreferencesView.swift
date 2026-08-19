@@ -34,7 +34,9 @@ struct PreferencesView: View {
                 Text(launchAtLoginError).font(.caption).foregroundStyle(.red)
             }
 
-            Button("Sign out of claude.ai") { appState.signOut() }
+            if appState.mode == .browser {
+                Button("Sign out of claude.ai") { appState.signOut() }
+            }
         }
         .padding(20)
         .frame(width: 320)

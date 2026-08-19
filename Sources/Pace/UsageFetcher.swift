@@ -2,16 +2,6 @@ import Foundation
 import WebKit
 import PaceCore
 
-/// MainActor-isolated so a delegate call lands its state mutation before the
-/// calling `refresh()`/`scrapeCurrentPage()` returns. A `nonisolated` protocol
-/// forces conformers to hop through an unstructured Task, which made the
-/// post-login poll read a stale `status` (review finding I5).
-@MainActor
-protocol UsageFetcherDelegate: AnyObject {
-    func usageFetcher(_ fetcher: UsageFetcher, didProduce lanes: [LaneUsage])
-    func usageFetcher(_ fetcher: UsageFetcher, didFailWith status: FetchStatus)
-}
-
 enum SessionWindow {
     /// Confirmed via Anthropic's support docs (Task 6 research):
     /// https://support.claude.com/en/articles/9797557-usage-limit-best-practices
@@ -20,9 +10,11 @@ enum SessionWindow {
     static let confirmedLength: TimeInterval? = 5 * 3600
 }
 
+/// MainActor-isolated so state mutations land before async callers resume —
+/// a nonisolated seam here forced an unstructured Task hop that let callers
+/// read stale status.
 @MainActor
 final class UsageFetcher: NSObject {
-    weak var delegate: UsageFetcherDelegate?
 
     private let webView: WKWebView
     private let window: NSWindow
@@ -45,63 +37,60 @@ final class UsageFetcher: NSObject {
         window.delegate = self
     }
 
-    func refresh() async {
-        // Never reload the page the user is signing into.
-        guard !isPresentingLogin else { return }
-        // Guards against an overlapping fetch (e.g. the 6-min timer firing
-        // again while a slow scrape is still mid-flight) tearing the
-        // WKWebView's navigation state — see review finding on Task 9.
-        guard !isRefreshing else { return }
+    enum ScrapeOutcome {
+        case success([LaneUsage])
+        case failure(FetchStatus)
+        /// Refresh skipped (login window up, or a scrape already in flight) —
+        /// not a failure; the caller leaves current state untouched.
+        case skipped
+    }
+
+    func fetchSnapshot() async -> ScrapeOutcome {
+        guard !isPresentingLogin else { return .skipped } // never reload the page the user is signing into
+        guard !isRefreshing else { return .skipped }
         isRefreshing = true
         defer { isRefreshing = false }
 
-        guard let url = URL(string: "https://claude.ai/new") else { return }
+        guard let url = URL(string: "https://claude.ai/new") else { return .skipped }
         webView.load(URLRequest(url: url))
         try? await Task.sleep(nanoseconds: 3_000_000_000)
 
-        await scrape()
+        return await scrape()
     }
 
     /// Reads whatever the WKWebView is already showing, without navigating —
     /// the post-login poll's detection mechanism, so watching for sign-in
-    /// completion can't destroy the sign-in itself.
-    /// Returns true once the page is past claude.ai's sign-in gate, whether or
-    /// not the panel then parsed, so the caller knows sign-in finished.
-    @discardableResult
-    func scrapeCurrentPage() async -> Bool {
-        guard !isRefreshing else { return false }
+    /// completion can't destroy the sign-in itself. Returns non-nil once the
+    /// page is past claude.ai's sign-in gate (whether or not it parsed), so
+    /// the caller knows sign-in finished.
+    func scrapeCurrentPageOutcome() async -> ScrapeOutcome? {
+        guard !isRefreshing else { return nil }
         isRefreshing = true
         defer { isRefreshing = false }
-        return await scrape()
+        let outcome = await scrape()
+        if case .failure(.needsLogin) = outcome { return nil }
+        return outcome
     }
 
-    @discardableResult
-    private func scrape() async -> Bool {
+    private func scrape() async -> ScrapeOutcome {
         switch await clickThroughToUsagePanel() {
         case .reachedUsagePanel:
             break
         case .notSignedIn:
-            delegate?.usageFetcher(self, didFailWith: .needsLogin)
-            return false
+            return .failure(.needsLogin)
         case .navigationBroke(let step):
-            delegate?.usageFetcher(self, didFailWith: .navigationFailed("Couldn't find the \(step) button — claude.ai's UI may have changed"))
-            return true
+            return .failure(.navigationFailed("Couldn't find the \(step) button — claude.ai's UI may have changed"))
         }
 
         guard let panelText = await readUsagePanelText(), !panelText.isEmpty else {
-            delegate?.usageFetcher(self, didFailWith: .parseError("Usage panel text not found"))
-            return true
+            return .failure(.parseError("Usage panel text not found"))
         }
-
         guard let lanes = UsagePanelTextExtractor.extractLanes(
             from: panelText, now: Date(), sessionWindowLength: SessionWindow.confirmedLength
         ) else {
-            delegate?.usageFetcher(self, didFailWith: .parseError("Could not parse usage panel text"))
-            return true
+            return .failure(.parseError("Could not parse usage panel text"))
         }
-
-        delegate?.usageFetcher(self, didProduce: lanes)
-        return true
+        return .success(lanes)
     }
 
     func presentLoginWindow() {
