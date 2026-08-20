@@ -22,17 +22,27 @@ struct KeychainCredentialStore {
     private static let servicePrefix = "Claude Code-credentials"
 
     func read(now: Date = Date()) -> KeychainReadResult {
-        let payloads = copyAllMatchingItemPayloads()
-        guard !payloads.isEmpty else { return .none }
-        let credentials = payloads.compactMap(ClaudeCodeCredential.parse(itemData:))
-        // Items that exist but don't parse also return .none — this conflates
-        // "no Claude Code" with "unreadable items". Both currently map to the
-        // same remediation; don't build a future mode decision on .none alone.
-        guard !credentials.isEmpty else { return .none }
-        if let freshest = ClaudeCodeCredential.selectFreshest(from: credentials, now: now) {
-            return .found(freshest)
+        // Decrypt newest-modified item first and stop as soon as one parses
+        // non-expired — each candidate is a SEPARATE Keychain item with its
+        // own ACL grant, so decrypting all of them on every poll means every
+        // duplicate/stale item (e.g. a leftover suffixed variant from another
+        // Claude Code install) re-prompts the user on its own schedule. Modification
+        // date is available from the attributes-only pass (no decrypt, no
+        // prompt), and correlates with token freshness closely enough to use
+        // as a decrypt order — correctness still comes from expiresAt below,
+        // this just changes which item we reach for first.
+        var parsedAny = false
+        for ref in matchingItemRefsSortedByRecency() {
+            guard let data = copyItemPayload(for: ref),
+                  let credential = ClaudeCodeCredential.parse(itemData: data) else { continue }
+            parsedAny = true
+            if credential.expiresAt.map({ $0 > now }) ?? true {
+                return .found(credential)
+            }
         }
-        return .allExpired
+        // No items, or items exist but none parse — both currently map to
+        // the same remediation; don't build a future mode decision on .none alone.
+        return parsedAny ? .allExpired : .none
     }
 
     /// Attributes-only (pass 1): costs nothing, decrypts nothing, prompts for
@@ -54,6 +64,13 @@ struct KeychainCredentialStore {
     /// what keeps the duplicate-service trap closed: limit-one by service
     /// alone would return the first (possibly stale) item.
     private func matchingItemRefs() -> [(service: String, account: String)] {
+        matchingItemRefsSortedByRecency().map { ($0.service, $0.account) }
+    }
+
+    /// Same pass-1 scan, but also pulls kSecAttrModificationDate (still
+    /// attributes-only — free) and sorts newest-first so `read` decrypts the
+    /// item Claude Code is actively touching before any stale duplicates.
+    private func matchingItemRefsSortedByRecency() -> [(service: String, account: String, modified: Date)] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecMatchLimit as String: kSecMatchLimitAll,
@@ -63,29 +80,29 @@ struct KeychainCredentialStore {
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let items = result as? [[String: Any]] else { return [] }
         var seen = Set<String>()
-        var refs: [(String, String)] = []
+        var refs: [(service: String, account: String, modified: Date)] = []
         for item in items {
             guard let service = item[kSecAttrService as String] as? String,
                   service.hasPrefix(Self.servicePrefix),
                   let account = item[kSecAttrAccount as String] as? String else { continue }
             let key = "\(service)\u{0}\(account)"
-            if seen.insert(key).inserted { refs.append((service, account)) }
+            guard seen.insert(key).inserted else { continue }
+            let modified = (item[kSecAttrModificationDate as String] as? Date) ?? .distantPast
+            refs.append((service, account, modified))
         }
-        return refs
+        return refs.sorted { $0.modified > $1.modified }
     }
 
-    private func copyAllMatchingItemPayloads() -> [Data] {
-        matchingItemRefs().compactMap { ref in
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: ref.service,
-                kSecAttrAccount as String: ref.account,
-                kSecMatchLimit as String: kSecMatchLimitOne,
-                kSecReturnData as String: true
-            ]
-            var result: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-            return result as? Data
-        }
+    private func copyItemPayload(for ref: (service: String, account: String, modified: Date)) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: ref.service,
+            kSecAttrAccount as String: ref.account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
     }
 }
