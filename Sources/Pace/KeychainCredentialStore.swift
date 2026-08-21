@@ -12,11 +12,18 @@ enum KeychainReadResult {
     case none
 }
 
-/// Reads Claude Code's OAuth credentials natively (SecItemCopyMatching), so
-/// the user's Keychain grant is scoped to Pace.app itself — shelling out to
-/// /usr/bin/security would extend the grant to every CLI process on the
-/// machine. Multiple items can share the service name (and suffixed
-/// variants exist), so this enumerates ALL matching items and lets
+/// Reads Claude Code's OAuth credentials. Discovery is native
+/// (SecItemCopyMatching, attributes only); the DECRYPT goes through
+/// /usr/bin/security, on purpose: Claude Code writes its item with
+/// `security add-generic-password -U`, so `security` is already on that
+/// item's ACL — reading through it never prompts. A Pace-scoped grant
+/// (SecItemCopyMatching with kSecReturnData) is the opposite: every `claude`
+/// launch rewrites the item and wipes the grant, so the "Always Allow" the
+/// user clicked is gone by the next poll. Verified 2026-08-21: the shell
+/// read returns the live item with zero prompt. Shelling out extends no
+/// access — the ACL entry for `security` exists whether Pace uses it or not.
+/// Multiple items can share the service name (and suffixed variants exist),
+/// so this enumerates ALL matching items and lets
 /// ClaudeCodeCredential.selectFreshest pick — a single-match read was
 /// observed returning a stale token right after a successful login.
 ///
@@ -126,6 +133,40 @@ final class KeychainCredentialStore {
     }
 
     private func copyItemPayload(for ref: (service: String, account: String, modified: Date)) -> (data: Data?, status: OSStatus) {
+        if let data = readViaSecurityCLI(service: ref.service, account: ref.account) {
+            return (data, errSecSuccess)
+        }
+        // Fallback: native read. This one CAN prompt (and the cooldown in
+        // `read` governs it) — only reached if /usr/bin/security failed.
+        return copyItemPayloadNative(for: ref)
+    }
+
+    /// `security find-generic-password -w` prints the secret as text (hex if
+    /// it isn't valid text — not the case for Claude Code's JSON) followed by
+    /// a newline. Nonzero exit / empty output → nil so the caller falls back.
+    private func readViaSecurityCLI(service: String, account: String) -> Data? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = ["find-generic-password", "-s", service, "-a", account, "-w"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch {
+            Self.log.error("security CLI launch failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            Self.log.notice("security CLI exit \(proc.terminationStatus, privacy: .public) for \(account, privacy: .public) — falling back to native read")
+            return nil
+        }
+        guard var text = String(data: data, encoding: .utf8) else { return nil }
+        while text.hasSuffix("\n") || text.hasSuffix("\r") { text.removeLast() }
+        return text.isEmpty ? nil : Data(text.utf8)
+    }
+
+    private func copyItemPayloadNative(for ref: (service: String, account: String, modified: Date)) -> (data: Data?, status: OSStatus) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: ref.service,
