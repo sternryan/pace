@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import os
 import PaceCore
 
 enum KeychainReadResult {
@@ -18,8 +19,23 @@ enum KeychainReadResult {
 /// variants exist), so this enumerates ALL matching items and lets
 /// ClaudeCodeCredential.selectFreshest pick — a single-match read was
 /// observed returning a stale token right after a successful login.
-struct KeychainCredentialStore {
+///
+/// Class, not struct: needs to remember which items recently required (and
+/// didn't get) user interaction, across polls.
+final class KeychainCredentialStore {
     private static let servicePrefix = "Claude Code-credentials"
+    /// Every `claude` CLI launch rewrites its credential item (confirmed:
+    /// item mdat lines up with a `claude` process start time), and rewriting
+    /// resets that item's Keychain ACL grant — so the item Pace most wants
+    /// (newest) is also the one most likely to need a fresh interactive
+    /// prompt. Without a cooldown, a poll every `refreshInterval` (120s in
+    /// API mode) re-prompts on that same item every single tick, which reads
+    /// as Pace "asking over and over" even though the user just hasn't
+    /// clicked Always Allow yet. Back off and fall through to the last item
+    /// that decrypted cleanly instead.
+    private static let promptCooldown: TimeInterval = 20 * 60
+    private var lastPromptFailure: [String: Date] = [:]
+    private static let log = Logger(subsystem: "com.sternryan.pace", category: "keychain")
 
     func read(now: Date = Date()) -> KeychainReadResult {
         // Decrypt newest-modified item first and stop as soon as one parses
@@ -33,8 +49,20 @@ struct KeychainCredentialStore {
         // this just changes which item we reach for first.
         var parsedAny = false
         for ref in matchingItemRefsSortedByRecency() {
-            guard let data = copyItemPayload(for: ref),
-                  let credential = ClaudeCodeCredential.parse(itemData: data) else { continue }
+            let key = itemKey(ref)
+            if let failedAt = lastPromptFailure[key], now.timeIntervalSince(failedAt) < Self.promptCooldown {
+                continue // still cooling down — don't re-prompt, try the next-best item
+            }
+            let (data, status) = copyItemPayload(for: ref)
+            guard let data else {
+                if status == errSecUserCanceled || status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+                    Self.log.notice("keychain prompt not granted for \(ref.account, privacy: .public) (status \(status, privacy: .public)) — backing off \(Int(Self.promptCooldown / 60), privacy: .public)m")
+                    lastPromptFailure[key] = now
+                }
+                continue
+            }
+            lastPromptFailure.removeValue(forKey: key)
+            guard let credential = ClaudeCodeCredential.parse(itemData: data) else { continue }
             parsedAny = true
             if credential.expiresAt.map({ $0 > now }) ?? true {
                 return .found(credential)
@@ -43,6 +71,10 @@ struct KeychainCredentialStore {
         // No items, or items exist but none parse — both currently map to
         // the same remediation; don't build a future mode decision on .none alone.
         return parsedAny ? .allExpired : .none
+    }
+
+    private func itemKey(_ ref: (service: String, account: String, modified: Date)) -> String {
+        "\(ref.service)\u{0}\(ref.account)"
     }
 
     /// Attributes-only (pass 1): costs nothing, decrypts nothing, prompts for
@@ -93,7 +125,7 @@ struct KeychainCredentialStore {
         return refs.sorted { $0.modified > $1.modified }
     }
 
-    private func copyItemPayload(for ref: (service: String, account: String, modified: Date)) -> Data? {
+    private func copyItemPayload(for ref: (service: String, account: String, modified: Date)) -> (data: Data?, status: OSStatus) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: ref.service,
@@ -102,7 +134,8 @@ struct KeychainCredentialStore {
             kSecReturnData as String: true
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return (nil, status) }
+        return (result as? Data, status)
     }
 }
