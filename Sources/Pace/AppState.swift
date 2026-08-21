@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AppKit
 import Observation
 import PaceCore
@@ -35,6 +36,8 @@ final class AppState {
     private var timer: Timer?
     private var postLoginPollTask: Task<Void, Never>?
     private var isFetching = false // timer + manual refresh can overlap; scrape has its own guard, API needs this one
+    static let log = Logger(subsystem: "com.sternryan.pace", category: "fetch")
+
     private var notificationGovernor = NotificationGovernor()
     private let notifier = PaceNotifier()
 
@@ -121,8 +124,14 @@ final class AppState {
         guard let result = await source.fetch() else { return } // skipped — leave state as-is
         switch result {
         case .success(let snapshot):
+            Self.log.info("fetch ok: \(snapshot.lanes.count, privacy: .public) lane(s)")
             applySnapshot(snapshot, fromCache: false)
         case .failure(let failure):
+            // Failures are otherwise invisible: the UI keeps rendering the
+            // last-good numbers, so a silently-stuck fetch loop looks healthy.
+            // Log the status (never the token) so `log show --predicate
+            // 'subsystem == "com.sternryan.pace"'` can diagnose it.
+            Self.log.error("fetch failed: \(String(describing: failure), privacy: .public)")
             status = failure
             // Last-known readings stay rendered; mark them as cached so the
             // dropdown can label their age honestly.
