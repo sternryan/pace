@@ -59,10 +59,17 @@ and `docs/superpowers/research/` for the design rationale and research.
 Keychain (service `Claude Code-credentials`, including suffixed variants some
 installs create). The token stays in memory and is sent only to
 `api.anthropic.com` over HTTPS. Pace never writes it to disk, never logs it,
-and never refreshes it — Claude Code owns token renewal. The Keychain read is
-a native Security.framework call, so the access grant macOS asks you for is
-scoped to Pace.app specifically — not to a shared CLI binary that any local
-process could then use.
+and never refreshes it — Claude Code owns token renewal.
+
+Discovery of the Keychain items is a native Security.framework call
+(attributes only). The decrypt itself runs `/usr/bin/security
+find-generic-password`, with a native read as fallback. This is deliberate:
+Claude Code creates its item with `security add-generic-password`, so
+`/usr/bin/security` is already on that item's ACL whether or not Pace uses it
+— shelling out grants no access that did not already exist. A Pace-scoped
+grant would be worse in practice, because every `claude` launch rewrites the
+item and wipes the grant, so the "Always Allow" you clicked is gone by the
+next poll.
 
 **Browser mode.** Without Claude Code credentials, Pace falls back to reading
 the rendered claude.ai Settings → Usage page in a hidden WKWebView, exactly as
