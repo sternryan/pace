@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.sternryan.pace</string>
+    <string>com.sternryan.codex-pace</string>
     <key>CFBundleName</key>
-    <string>Pace</string>
+    <string>Codex Pace</string>
     <key>CFBundleExecutable</key>
-    <string>Pace</string>
+    <string>CodexPace</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

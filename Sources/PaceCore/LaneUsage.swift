@@ -11,9 +11,8 @@ public struct LaneUsage: Equatable, Sendable, Codable {
     /// Server-reported severity; `.normal` for sources that don't carry one
     /// (the browser scrape path).
     public let severity: LaneSeverity
-    /// Server-provided model label for a scoped lane (e.g. "Fable"). A label
-    /// only — lane identity comes from `kind`, so a model rename relabels
-    /// the row instead of breaking it.
+    /// Source-provided label. Lane identity remains stable when Codex changes
+    /// which windows a plan exposes.
     public let displayNameOverride: String?
 
     public init(kind: LaneKind, percentUsed: Int, resetDate: Date, windowLength: TimeInterval?,
@@ -27,7 +26,9 @@ public struct LaneUsage: Equatable, Sendable, Codable {
     }
 
     public var effectiveDisplayName: String {
-        if let displayNameOverride, kind == .fableWeek { return "\(displayNameOverride) · week" }
+        if let displayNameOverride {
+            return kind == .fableWeek ? "\(displayNameOverride) · week" : displayNameOverride
+        }
         return kind.displayName
     }
 }

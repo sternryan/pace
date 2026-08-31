@@ -1,8 +1,7 @@
 #!/bin/bash
 # Ensure a stable local code-signing identity exists. Ad-hoc signatures have
 # no persistent identity, so macOS re-prompts the Keychain grant for the
-# Claude Code credentials item after every rebuild. A local self-signed cert
-# gives Pace.app a stable identity: grant once, survives rebuilds.
+# A local self-signed cert gives CodexPace.app a stable identity across rebuilds.
 # Nothing here enters the repo; the cert lives only in the login keychain.
 set -euo pipefail
 

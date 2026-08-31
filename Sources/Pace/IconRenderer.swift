@@ -3,12 +3,12 @@ import PaceCore
 
 enum IconRenderer {
     static func render(readings: [PaceReading], status: FetchStatus) -> NSImage {
-        // Before the first successful fetch, readings is empty. Draw 3 empty
+        // Before the first successful fetch, readings is empty. Draw 2 empty
         // tracks (no fill, no fake numbers) rather than nothing — the spec's
         // "never blank the icon" invariant applies to first launch too, not
         // just post-fetch failure states.
         let geometries = readings.isEmpty
-            ? Array(repeating: BarGeometry(fillFraction: 0, tickFraction: nil, isHot: false), count: 3)
+            ? Array(repeating: BarGeometry(fillFraction: 0, tickFraction: nil, isHot: false), count: 2)
             : readings.map(IconGeometry.barGeometry(for:))
         let width: CGFloat = 22
         let height: CGFloat = 16

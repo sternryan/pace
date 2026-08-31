@@ -12,7 +12,7 @@ public struct SnapshotCache {
 
     public static func defaultDirectory() -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Pace", isDirectory: true)
+            .appendingPathComponent("CodexPace", isDirectory: true)
     }
 
     public func load() -> UsageSnapshot? {

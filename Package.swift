@@ -2,15 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "Pace",
+    name: "CodexPace",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "PaceCore", targets: ["PaceCore"]),
-        .executable(name: "Pace", targets: ["Pace"])
+        .executable(name: "CodexPace", targets: ["CodexPace"])
     ],
     targets: [
         .target(name: "PaceCore"),
-        .executableTarget(name: "Pace", dependencies: ["PaceCore"]),
+        .executableTarget(
+            name: "CodexPace",
+            dependencies: ["PaceCore"],
+            path: "Sources/Pace",
+            exclude: ["ApiUsageSource.swift", "KeychainCredentialStore.swift", "ScrapeUsageSource.swift", "UsageFetcher.swift", "Info.plist"]
+        ),
         .testTarget(name: "PaceCoreTests", dependencies: ["PaceCore"])
     ]
 )

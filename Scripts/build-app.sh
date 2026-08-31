@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-APP_NAME="Pace"
+APP_NAME="CodexPace"
 BUILD_DIR=".build/release"
 APP_BUNDLE=".build/${APP_NAME}.app"
 

@@ -7,7 +7,7 @@ struct MenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Claude Usage")
+            Text("Codex Usage")
                 .font(.system(size: 13, weight: .semibold))
                 .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 6)
 
@@ -16,21 +16,10 @@ struct MenuView: View {
                 Divider()
             }
 
-            if let extra = appState.latestSnapshot?.extraUsage, extra.isEnabled, extra.dollarsUsed > 0 {
-                HStack {
-                    Text("Extra usage").font(.system(size: 12.5)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "$%.2f", extra.dollarsUsed)).font(.system(size: 12.5, weight: .semibold))
-                }
-                .padding(.horizontal, 16).padding(.vertical, 8)
-                Divider()
-            }
-
             statusRow
 
             Divider()
             MenuActionRow(title: "Refresh now", hint: appState.lastSuccessLabel) { appState.refreshNow() }
-            MenuActionRow(title: "Open claude.ai usage", hint: nil) { appState.openClaudeUsagePage() }
             MenuActionRow(title: "Preferences…", hint: nil) { openSettings() }
             MenuActionRow(title: "Quit", hint: nil) { NSApplication.shared.terminate(nil) }
         }
@@ -46,24 +35,10 @@ struct MenuView: View {
                 .padding(.horizontal, 16).padding(.vertical, 6)
         }
         switch appState.status {
-        case .needsLogin:
-            Button("Sign in to claude.ai") { appState.presentLogin() }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .tokenExpired:
-            Text("Claude Code login expired — open Claude Code and run /login. Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .transient(let detail):
-            Text("Couldn't reach the usage API (\(detail)). Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .navigationFailed(let detail):
-            Text("\(detail). Showing last known values — open claude.ai directly to check.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .parseError(let detail):
-            Text("Couldn't refresh usage (\(detail)). Showing last known values.")
+        case .needsLogin, .tokenExpired, .navigationFailed:
+            EmptyView()
+        case .transient(let detail), .parseError(let detail):
+            Text("Couldn't refresh local Codex usage (\(detail)). Showing last known values.")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .ok:
@@ -148,8 +123,8 @@ private struct MenuActionRow: View {
 // shipping a forgotten test edit.
 #Preview("Hot lane") {
     let now = Date()
-    let hotLane = LaneUsage(kind: .session, percentUsed: 70, resetDate: now.addingTimeInterval(3600), windowLength: 5 * 3600)
-    let coolLane = LaneUsage(kind: .allModelsWeek, percentUsed: 20, resetDate: now.addingTimeInterval(4 * 24 * 3600), windowLength: 7 * 24 * 3600)
+    let hotLane = LaneUsage(kind: .primary, percentUsed: 70, resetDate: now.addingTimeInterval(3600), windowLength: 5 * 3600)
+    let coolLane = LaneUsage(kind: .secondary, percentUsed: 20, resetDate: now.addingTimeInterval(4 * 24 * 3600), windowLength: 7 * 24 * 3600)
     let readings = [hotLane, coolLane].map { PaceCalculator.reading(for: $0, now: now) }
     return VStack {
         ForEach(readings, id: \.lane.kind) { reading in
