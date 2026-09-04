@@ -119,7 +119,7 @@ Refresh cadence: 2 min for Claude and Codex, 60 s for smithy (cheap, and lease s
 
 - **Menubar pin**: headline window as an 18-pt mini-bar plus percent. Tint red only when `.ahead` or `.capped`, grey when stale. Click opens the popover.
 - **Popover**: windows grouped by provider (Claude, Codex), each with used/elapsed bars, reset countdown, projection line, and a small source tag (api / local / cache, with age). Below: smithy lane state and the advice line. Footer: last refresh, refresh button, Preferences, Quit.
-- **Statusline**: `~/.claude/hooks/pace-statusline-segment.sh` reads `report.json` with `jq`, no network, and prints one segment like `Fable wk 71%↑ caps 14:10 · 5h 32%`. If the file is older than 10 min it prints `pace stale`. `gsd-statusline.js` gains one line that shells to this script and appends the segment. If the script or file is absent the statusline is unchanged.
+- **Statusline**: `~/.claude/hooks/pace-statusline-segment.sh` (called from `~/.claude/bin/statusline.sh`, the current statusLine command) reads `report.json` with `jq`, no network, and prints one segment like `Fable wk 71%↑ caps 14:10 · 5h 32%`. If the file is older than 10 min it prints `pace stale`. `gsd-statusline.js` gains one line that shells to this script and appends the segment. If the script or file is absent the statusline is unchanged.
 - **CLI**: `pace` prints the report as aligned text, `pace --json` prints `report.json` verbatim, `pace --refresh` forces a fetch through the running app's loopback API and falls back to an in-process fetch if the app is not running.
 
 ### 3.6 Preferences

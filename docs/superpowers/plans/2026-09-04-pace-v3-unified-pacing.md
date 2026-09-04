@@ -1328,7 +1328,7 @@ public final class SpendProvider: Provider, @unchecked Sendable {
     /// `scan.entries` is `[ModelUsageEntry]` with `timestamp: Date`, `totalTokens: Int`, `costUSD: Double`
     /// (names per the vendored DailyUsageSeries.swift; if upstream uses different property names, adapt here, not there).
     static func hourly(from scan: LogUsageScan, provider: ProviderID, now: Date) -> [HourBucket] {
-        let floor = now.addingTimeInterval(-6 * 3600)
+        let floor = now.addingTimeInterval(-8 * 86400)   // Task 2 ruling: hourly covers trailing 8 days so weekly windows can be attributed
         let grouped = Dictionary(grouping: scan.entries.filter { $0.timestamp >= floor }) { e -> Date in
             Date(timeIntervalSince1970: (e.timestamp.timeIntervalSince1970 / 3600).rounded(.down) * 3600)
         }
@@ -1965,6 +1965,9 @@ struct PreferencesView: View {
 
 ### Task 14: Statusline segment
 
+> **Execution note (2026-09-04):** `~/.claude/hooks/gsd-statusline.js` was retired the same day by another session; the statusLine command is now `bash ~/.claude/bin/statusline.sh`. The segment script below is unchanged; the hook block was added to `bin/statusline.sh` (failure-safe under `set -euo pipefail`, appended to both printf branches) instead of the JS file, and left uncommitted in `~/.claude` because that file carried another session's pending edits.
+
+
 **Files:**
 - Create: `Scripts/pace-statusline-segment.sh`
 - Modify: `~/.claude/hooks/gsd-statusline.js` around line 450 (`process.stdout.write(composeStatusline(...))`)
@@ -1989,8 +1992,9 @@ jq -r '
              elif .kind=="codexSession" then "Codex 5h" elif .kind=="codexWeek" then "Codex wk" else .kind end;
   def arrow: if .status=="ahead" or .status=="capped" then "↑" else "" end;
   def cap: if .projectedCapAt then " caps " + (.projectedCapAt | sub("\\.[0-9]+";"") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime | localtime | strftime("%H:%M")) else "" end;
+  (.headline.kind // "") as $hk |
   ([.headline | select(.!=null) | (short + " " + (.percentUsed|tostring) + "%" + arrow + cap)]
-   + [.windows[] | select(.kind=="session") | select(.kind != (.headline.kind // "")) | ("5h " + (.percentUsed|tostring) + "%")]
+   + [.windows[] | select(.kind=="session" and .kind != $hk) | ("5h " + (.percentUsed|tostring) + "%")]
   ) | join(" · ")' "$F" 2>/dev/null | tr -d '\n'
 ```
 
@@ -2038,7 +2042,7 @@ install-statusline:
 - [ ] **Step 3: Live definition-of-done checks** (spec §6.2–6.4), each pasted into the final report:
   - `pace --json | jq '.providers'` → claude `api`, codex `api` (or `localFallback` with `needsLogin` if `codex login` is stale — say which), smithy `laneState` present, spend `burn.hourly` non-empty.
   - `pace --json | jq -r .laneState` vs `ssh anvil flux-lock-status` run within the same minute → consistent (`free`↔`serving`, `held`↔`leasedAway`).
-  - `diff <(pace --json) <(curl -s 127.0.0.1:6737/v1/report | jq -S .)` → identical (or differ only by `generatedAt` if a refresh raced; rerun).
+  - `diff <(pace --json | jq -S .) <(curl -s 127.0.0.1:6737/v1/report | jq -S .)` → identical (or differ only by `generatedAt` if a refresh raced; rerun).
   - Fresh `claude` session shows the segment.
 - [ ] **Step 4: Grader** (house rule 2): `~/.claude/bin/grade-diff.sh` against `a5b4dea..HEAD` before any push. Fix, re-run tests, re-grade until PASS.
 - [ ] **Step 5: Push** `git push origin main` as a standalone command (the deploy gate refuses chained push segments).
