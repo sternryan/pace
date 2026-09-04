@@ -12,6 +12,10 @@ public struct WindowVerdict: Equatable, Codable, Sendable {
     public let projectedCapAt: Date?      // nil when resetsFirst, tooEarly, or no rate
     public let resetsFirst: Bool
     public let projectionBasis: ProjectionBasis
+    /// Carried through from `LaneUsage.severity` so a viewer can see the
+    /// server-asserted alarm even after it has already been folded into
+    /// `status` (see `PacingEngine.verdict`'s severity-promotion rule).
+    public let severity: LaneSeverity
     public let source: SnapshotSource
     public let fetchedAt: Date
     public let verdict: String

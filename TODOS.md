@@ -1,5 +1,11 @@
 # Pace — deferred items
 
+## 0. v2's native notifications not wired into v3
+
+`NotificationGovernor` and `PaceNotifier` are kept in the tree but nothing
+calls them — v3's only ahead-of-pace surface is the popover and the icon
+turning red. Wiring a native notification back in is deferred, not dropped.
+
 ## 1. Overage dollar divisor is unverified
 
 **What:** Pace divides the extra-usage endpoint's raw credits/cents figure by

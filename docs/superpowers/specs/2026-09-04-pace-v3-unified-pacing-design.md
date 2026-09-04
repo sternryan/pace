@@ -166,3 +166,11 @@ ntfy or any push; iCloud or multi-Mac sync; auto-update; notarization or App Sto
 
 - Overage divisor (`used_credits ÷ 100`) still unverified against a nonzero live response (from pace v2). Verify during implementation or label the lane "unverified" in the popover.
 - Exact scheduler health field names for lease state: confirm live, record in `SmithyProvider`.
+
+## Execution notes 2026-09-04
+
+- The shipped `PaceReport`/`WindowVerdict` field is `laneState`, not `smithy_state` or any other name implied elsewhere in this doc.
+- §3.4 says the loopback server is "GET only" — superseded by §3.5 and the shipped code: `POST /v1/refresh` exists and is the CLI's `--refresh` path, in addition to `GET /v1/report`.
+- §3.3's burn attribution is per provider, not per model — `BurnSeries` has no model dimension — so a scoped lane (`fableWeek`) always uses the plain percent-rate projection, never `burnRate`, regardless of how much burn history is available.
+- 12/24-hour clock preference is deferred to the system locale (`PaceFormatter.shortClock` uses `Calendar.current`/`DateFormatter` defaults); no explicit user-facing toggle was built.
+- `leasedAway` is verified only by fixture (`SmithyProviderTests`), not observed against a real held/wedged lease live — the field names are confirmed live per item 2 in `TODOS.md`, but the `leasedAway` *branch itself* has not been.

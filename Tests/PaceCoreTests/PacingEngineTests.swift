@@ -119,15 +119,17 @@ final class PacingEngineTests: XCTestCase {
         XCTAssertEqual(v.projectionBasis, .percentRate)
     }
 
-    func testWeeklyLaneWithBurnSpanningBackPastWindowStartUsesBurnRate() {
-        // Small elapsed window so a single hourly bucket can legitimately
-        // reach back to windowStart.
+    // F4: burn attribution is per provider, not per model — a scoped lane
+    // like fableWeek shares its provider's token stream with every other
+    // Claude lane, so it can never trust burnRate, even when the burn
+    // series comfortably spans the window.
+    func testFableWeekAlwaysUsesPercentRateEvenWithFullBurnCoverage() {
         let l = lane(.fableWeek, used: 10, windowLength: 604800, elapsed: 3600)
         let burn = BurnSeries(hourly: [HourBucket(start: now.addingTimeInterval(-3600), provider: .claude, tokens: 100_000, costUSD: 1)],
                               daily: [], unparsedLines: 0)
         let report = PacingEngine.report(snapshots: [snap(.claude, lanes: [l]), snap(.spend, burn: burn)], now: now)
         let v = report.windows.first { $0.kind == .fableWeek }!
-        XCTAssertEqual(v.projectionBasis, .burnRate)
+        XCTAssertEqual(v.projectionBasis, .percentRate)
     }
 
     // Fix round 1, finding #2: a duplicate provider in the snapshot list must
@@ -140,5 +142,39 @@ final class PacingEngineTests: XCTestCase {
         let report = PacingEngine.report(snapshots: [older, newer], now: now)
         XCTAssertEqual(report.windows.count, 1)
         XCTAssertEqual(report.windows.first?.percentUsed, 99)
+    }
+
+    // F1: the overage lane's "percentUsed" is a raw dollar figure, not a
+    // pace percent — it must never read ahead, never get a headline slot,
+    // and never drive advice.
+    func testOverageLaneIsAlwaysOnPaceNeverHeadlineNoAdvice() {
+        let overage = LaneUsage(kind: .overage, percentUsed: 150, resetDate: .distantFuture, windowLength: nil)
+        let session = lane(.session, used: 30, windowLength: 18000, elapsed: 9000) // behind pace, not ahead
+        let report = PacingEngine.report(snapshots: [snap(.claude, lanes: [session, overage])], now: now)
+        let overageWindow = report.windows.first { $0.kind == .overage }!
+        XCTAssertEqual(overageWindow.status, .onPace)
+        XCTAssertNil(overageWindow.projectedCapAt)
+        XCTAssertEqual(overageWindow.verdict, "Extra usage: $150 used (unverified ÷100 of raw credits)")
+        XCTAssertNotEqual(report.headline?.kind, .overage)
+        XCTAssertNil(report.advice)
+    }
+
+    // S1: server severity forces the alarm even when local pace math is calm.
+    func testExceededSeverityPromotesOnPaceToAhead() {
+        let l = LaneUsage(kind: .session, percentUsed: 30, resetDate: now.addingTimeInterval(9000),
+                          windowLength: 18000, severity: .exceeded)
+        let report = PacingEngine.report(snapshots: [snap(.claude, lanes: [l])], now: now)
+        XCTAssertEqual(report.windows.first?.status, .ahead)
+        XCTAssertEqual(report.windows.first?.severity, .exceeded)
+    }
+
+    // F8: two lanes of the same kind (e.g. a race between a live fetch and a
+    // local fallback both reporting codexSession) must collapse to one row.
+    func testDuplicateLaneKindsAreDeduped() {
+        let a = lane(.codexSession, used: 40, windowLength: 18000, elapsed: 9000)
+        let b = lane(.codexSession, used: 90, windowLength: 18000, elapsed: 9000)
+        let report = PacingEngine.report(snapshots: [snap(.codex, lanes: [a, b])], now: now)
+        XCTAssertEqual(report.windows.filter { $0.kind == .codexSession }.count, 1)
+        XCTAssertEqual(report.windows.first { $0.kind == .codexSession }?.percentUsed, 40)
     }
 }

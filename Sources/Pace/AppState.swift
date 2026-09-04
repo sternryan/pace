@@ -6,6 +6,11 @@ import PaceCore
 final class AppState {
     private(set) var report: PaceReport?
     private(set) var lastRefreshAt: Date?
+    /// Set when the loopback server failed to bind (e.g. port 6737 already
+    /// taken by another instance) — the app still runs and polls providers,
+    /// but the CLI/statusline lose the in-process refresh path. F6: this
+    /// used to be swallowed by `try?` and never surfaced anywhere.
+    private(set) var serverError: String?
 
     var refreshInterval: TimeInterval {
         didSet {
@@ -44,7 +49,11 @@ final class AppState {
             }
         }
 
-        try? server.start()
+        do {
+            try server.start()
+        } catch {
+            serverError = "\(error)"
+        }
         c.start(interval: refreshInterval)
     }
 

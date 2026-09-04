@@ -47,6 +47,12 @@ struct MenuView: View {
                 SettingsLink { Text("Preferences") }
                 Button("Quit") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
             }
+            if let err = state.serverError {
+                Text("loopback :6737 unavailable: \(err)").font(.caption2).foregroundStyle(.orange)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(nil)
+            }
         }
         .padding(12)
         .frame(width: 380)
@@ -65,30 +71,42 @@ struct WindowRow: View {
     let w: WindowVerdict
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(w.kind.displayName)
-                Spacer()
-                Text("\(w.percentUsed)%").monospacedDigit()
-                Text("\(w.source.rawValue) · \(PaceFormatter.ageLabel(since: w.fetchedAt, now: Date()))")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    Rectangle().fill(.quaternary)
-                    Rectangle()
-                        .fill(w.status == .ahead || w.status == .capped ? .red : .accentColor)
-                        .frame(width: g.size.width * CGFloat(w.percentUsed) / 100)
-                    if let e = w.percentElapsed {
-                        Rectangle().fill(.primary).frame(width: 1).offset(x: g.size.width * CGFloat(e) / 100)
-                    }
-                }
-            }
-            .frame(height: 6)
+        // F1: the overage lane isn't a pace lane (no window, no elapsed
+        // fraction, "percentUsed" is a raw dollar figure) — render it as
+        // its own verdict line only, no bar, no elapsed tick.
+        if w.kind == .overage {
             Text(w.verdict).font(.caption).foregroundStyle(.secondary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .lineLimit(nil)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(w.kind.displayName)
+                    Spacer()
+                    Text("\(w.percentUsed)%").monospacedDigit()
+                    Text("\(w.source.rawValue) · \(PaceFormatter.ageLabel(since: w.fetchedAt, now: Date()))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(.quaternary)
+                        Rectangle()
+                            .fill(w.status == .ahead || w.status == .capped ? .red : .accentColor)
+                            .frame(width: g.size.width * CGFloat(w.percentUsed) / 100)
+                        if let e = w.percentElapsed {
+                            Rectangle().fill(.primary).frame(width: 1).offset(x: g.size.width * CGFloat(e) / 100)
+                        }
+                    }
+                }
+                .frame(height: 6)
+                Text(w.verdict).font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(nil)
+                Text(PaceFormatter.countdownLabel(until: w.resetsAt, now: Date()))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
         }
     }
 }

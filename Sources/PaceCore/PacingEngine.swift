@@ -13,9 +13,16 @@ public enum PacingEngine {
         let laneState = byProvider[.smithy]?.laneState
 
         var windows: [WindowVerdict] = []
+        var seenKinds: Set<LaneKind> = []
         for p in [ProviderID.claude, .codex] {
             guard let s = byProvider[p] else { continue }
             for lane in s.lanes {
+                // A lane kind must appear at most once — a duplicate (e.g.
+                // two codexSession lanes from a race between the live fetch
+                // and a local fallback) would double-count in pickHeadline's
+                // aggregate scans. Keep the first (the one already fresher,
+                // per the provider-level dedupe above).
+                guard seenKinds.insert(lane.kind).inserted else { continue }
                 windows.append(verdict(for: lane, snapshot: s, burn: burn, now: now))
             }
         }
@@ -31,7 +38,26 @@ public enum PacingEngine {
     }
 
     static func verdict(for lane: LaneUsage, snapshot: ProviderSnapshot, burn: BurnSeries?, now: Date) -> WindowVerdict {
-        let status = PaceCalculator.status(for: lane, now: now)
+        // The overage lane's "percentUsed" is actually a raw dollar figure
+        // (see ClaudeProvider), not a percent of anything with a window or a
+        // pace to be ahead/behind of — it always reads onPace, with no
+        // projection, and its own dollar-labelled verdict line.
+        if lane.kind == .overage {
+            return WindowVerdict(kind: lane.kind, provider: lane.kind.provider, percentUsed: lane.percentUsed,
+                                 percentElapsed: nil, resetsAt: lane.resetDate, status: .onPace,
+                                 projectedCapAt: nil, resetsFirst: false, projectionBasis: .none,
+                                 severity: lane.severity, source: snapshot.source, fetchedAt: snapshot.fetchedAt,
+                                 verdict: "Extra usage: $\(lane.percentUsed) used (unverified ÷100 of raw credits)")
+        }
+
+        var status = PaceCalculator.status(for: lane, now: now)
+        // Server-asserted alarm wins (v2 parity): the server can see caps
+        // the local pace model can't, so a critical/exceeded severity
+        // promotes an otherwise-calm verdict to `.ahead` rather than being
+        // silently dropped once `status` has already been computed.
+        if lane.severity.isAlarming, status == .onPace || status == .tooEarly {
+            status = .ahead
+        }
         let elapsedFrac = PaceCalculator.elapsedFraction(for: lane, now: now)
         let elapsedPct = elapsedFrac.map { Int($0 * 100) }
 
@@ -40,7 +66,12 @@ public enum PacingEngine {
         if status != .tooEarly, status != .capped, let w = lane.windowLength, w > 0 {
             let start = lane.resetDate.addingTimeInterval(-w)
             let remainingPct = Double(100 - lane.percentUsed)
-            if let burn, lane.percentUsed >= minimumUsedForBurnProjection {
+            // Burn attribution (BurnSeries) is per provider, not per model —
+            // a scoped lane like fableWeek shares its provider's token
+            // stream with every other Claude lane, so "tokens since window
+            // start" can't be isolated to just this lane. Scoped lanes
+            // always use the plain percent-rate projection instead.
+            if lane.kind != .fableWeek, let burn, lane.percentUsed >= minimumUsedForBurnProjection {
                 // The burn series only covers a trailing window (see
                 // BurnSeries.hourly). A lane whose window is longer than that
                 // coverage (a weekly lane against a few hours of buckets)
@@ -69,7 +100,7 @@ public enum PacingEngine {
         return WindowVerdict(kind: lane.kind, provider: lane.kind.provider, percentUsed: lane.percentUsed,
                              percentElapsed: elapsedPct, resetsAt: lane.resetDate, status: status,
                              projectedCapAt: cap, resetsFirst: resetsFirst, projectionBasis: basis,
-                             source: snapshot.source, fetchedAt: snapshot.fetchedAt,
+                             severity: lane.severity, source: snapshot.source, fetchedAt: snapshot.fetchedAt,
                              verdict: verdictLine(lane: lane, elapsedPct: elapsedPct, status: status,
                                                   cap: cap, resetsFirst: resetsFirst, now: now))
     }
@@ -89,7 +120,11 @@ public enum PacingEngine {
     }
 
     static func pickHeadline(_ windows: [WindowVerdict]) -> WindowVerdict? {
-        let ahead = windows.filter { $0.status == .ahead || $0.status == .capped }
+        // The overage lane isn't a pace lane — it has no window, no
+        // elapsed fraction, and its "percentUsed" is a raw dollar figure,
+        // so it must never be eligible as the headline.
+        let candidates = windows.filter { $0.kind != .overage }
+        let ahead = candidates.filter { $0.status == .ahead || $0.status == .capped }
         if !ahead.isEmpty {
             return ahead.min { a, b in
                 switch (a.projectedCapAt, b.projectedCapAt) {
@@ -100,7 +135,7 @@ public enum PacingEngine {
                 }
             }
         }
-        return windows.filter { $0.status != .tooEarly }
+        return candidates.filter { $0.status != .tooEarly }
             .max { ($0.percentUsed - ($0.percentElapsed ?? 0)) < ($1.percentUsed - ($1.percentElapsed ?? 0)) }
     }
 

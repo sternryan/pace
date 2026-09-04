@@ -22,28 +22,32 @@ public struct SmithyProvider: Provider {
         var err: ProviderError? = nil
         if models == nil { err = .unreachable("scheduler hearth:8085 not answering") }
         else if lease == nil { err = .unreachable("anvil lease server :8001 not answering") }
+        else if state == .unreachable { err = .unreachable("local-heavy not serving") }
         return ProviderSnapshot(provider: .smithy, fetchedAt: now, source: .api, lanes: [], laneState: state, error: err)
     }
 
-    /// serving  = local-heavy serving_now AND a candidate with status "ready" AND lease state "free"
-    /// leasedAway = lane answers but lease is "held" or "wedged"
-    /// unreachable = anything else (either GET failed, malformed, or lane not serving)
+    /// serving    = lease state "free" AND local-heavy serving_now AND a candidate with status "ready"
+    /// leasedAway = lease state "held" or "wedged" — decided from the lease alone, regardless of
+    ///              what the scheduler's `serving_now` says, since a held/wedged lease is the more
+    ///              authoritative "not available to you" signal than a scheduler snapshot that may
+    ///              not have noticed yet.
+    /// unreachable = anything else (either GET failed, malformed, lease state unrecognized, or the
+    ///              lease is free but the scheduler doesn't actually have the lane serving)
     public static func map(models: Data?, lease: Data?) -> LaneState {
-        guard let models, let lease,
+        guard let lease,
+              let leaseObj = try? JSONSerialization.jsonObject(with: lease) as? [String: Any],
+              let state = leaseObj["state"] as? String else { return .unreachable }
+        if state == "held" || state == "wedged" { return .leasedAway }
+        guard state == "free" else { return .unreachable }
+        guard let models,
               let root = try? JSONSerialization.jsonObject(with: models) as? [String: Any],
               let data = root["data"] as? [[String: Any]],
               let heavy = data.first(where: { ($0["id"] as? String) == "local-heavy" }),
               let smithy = heavy["smithy"] as? [String: Any],
               (smithy["serving_now"] as? Bool) == true,
               let cands = smithy["candidates"] as? [[String: Any]],
-              cands.contains(where: { ($0["status"] as? String) == "ready" }),
-              let leaseObj = try? JSONSerialization.jsonObject(with: lease) as? [String: Any],
-              let state = leaseObj["state"] as? String else { return .unreachable }
-        switch state {
-        case "free": return .serving
-        case "held", "wedged": return .leasedAway
-        default: return .unreachable
-        }
+              cands.contains(where: { ($0["status"] as? String) == "ready" }) else { return .unreachable }
+        return .serving
     }
 
     private static func get(_ url: URL, session: URLSession) async -> Data? {

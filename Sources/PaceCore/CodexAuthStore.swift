@@ -31,20 +31,6 @@ public struct CodexAuthStore: Sendable {
                          accountID: tokens["account_id"] as? String, lastRefresh: last)
     }
 
-    /// Rewrites only the `tokens` block and `last_refresh`; every other key is preserved.
-    public func save(_ auth: CodexAuth) throws {
-        var obj = (try? JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [String: Any]) ?? [:]
-        var tokens = (obj["tokens"] as? [String: Any]) ?? [:]
-        tokens["access_token"] = auth.accessToken
-        if let r = auth.refreshToken { tokens["refresh_token"] = r }
-        if let a = auth.accountID { tokens["account_id"] = a }
-        obj["tokens"] = tokens
-        obj["last_refresh"] = ISO8601DateFormatter().string(from: auth.lastRefresh ?? Date())
-        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: fileURL, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-    }
-
     /// JWT `exp` minus 5 min; if no exp, refresh when `last_refresh` is older than 8 days.
     public static func needsRefresh(_ auth: CodexAuth, now: Date) -> Bool {
         if let exp = jwtExpiry(auth.accessToken) { return now >= exp.addingTimeInterval(-300) }

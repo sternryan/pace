@@ -20,6 +20,18 @@ public enum PaceFormatter {
         return hours <= 0 ? "before reset" : "~\(hours)h before reset"
     }
 
+    /// "resets in Xh Ym" (or "resets in Ym" under an hour, or "resets shortly"
+    /// at/after `until`) — the popover's per-lane reset countdown. Shares the
+    /// same threshold shape as `resetLabel(for:now:)` but takes a bare `Date`
+    /// so callers with a `WindowVerdict` (no `LaneUsage`) can use it too.
+    public static func countdownLabel(until: Date, now: Date) -> String {
+        let interval = until.timeIntervalSince(now)
+        if interval <= 0 { return "resets shortly" }
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        return hours > 0 ? "resets in \(hours)h \(minutes)m" : "resets in \(minutes)m"
+    }
+
     public static func ageLabel(since date: Date, now: Date) -> String {
         let minutes = max(0, Int(now.timeIntervalSince(date)) / 60)
         if minutes < 60 { return "\(minutes)m ago" }

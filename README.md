@@ -14,14 +14,19 @@ compute lane, and local spend estimated from on-disk usage logs.
 
 ## What it looks like
 
-Stacked bars in the menu bar, one per lane (Claude session, Claude week,
-Fable week, Codex session, Codex week). Each bar fills to the percent used,
-with a tick mark at the percent of the window that has elapsed. Monochrome
-(matches Battery/WiFi/Control Center) except a lane that's ahead of pace,
-which turns red — the only color the icon ever shows. Click the icon for a
-dropdown with exact numbers, reset times, a projected time-to-cap for any
-ahead-of-pace lane, the smithy lane's state, and (if overage spend is enabled
-and nonzero) an "Extra usage" dollar row.
+The menu bar icon itself shows one lane at a time: a single mini progress
+bar plus its percent, for whichever lane is pinned (or, with nothing pinned,
+whichever lane the pacing engine picks as the headline — the tightest or
+most-ahead one). The bar fills to percent used, with a tick mark at the
+percent of the window elapsed. It's monochrome (matches Battery/WiFi/Control
+Center) and turns red only when that lane is ahead of pace or capped — the
+only color the icon ever shows — and dims to indicate a stale report.
+
+Click the icon for a dropdown with every lane's own bar (Claude session,
+Claude week, Fable week, Codex session, Codex week), exact numbers, reset
+countdowns, a projected time-to-cap for any ahead-of-pace lane, the smithy
+lane's state, and (if overage spend is enabled and nonzero) an "Extra usage"
+dollar row — shown as text only, with no bar, since it isn't a pace lane.
 
 ## The four sources
 
@@ -33,6 +38,9 @@ and nonzero) an "Extra usage" dollar row.
   Codex CLI's own usage view does. If that's unavailable or the login looks
   stale, Pace falls back to scanning `~/.codex/sessions` for a local rate-limit
   estimate and marks the source `localFallback` with a `needsLogin` reason.
+  Pace never writes `~/.codex/auth.json`; the Codex CLI owns renewal. If
+  Pace's own poll finds the access token near expiry, it refreshes one in
+  memory for its own subsequent polls, but never persists it back to disk.
 - **Smithy.** A local compute lane, not a usage meter — its "usage" is
   whether the lane is actually available to you right now. Pace checks the
   fabric scheduler (`hearth:8085/v1/models`) for whether the lane is serving,
@@ -94,9 +102,13 @@ or 5 minutes) and whether the icon is pinned in the menu bar.
 
 ## CLI
 
-`make install-cli` installs `pace` to `~/.local/bin/pace`. It prefers reading
-the running app's cached report over the loopback API; if the app isn't
-running, it fetches in-process instead (which may hit the Keychain directly).
+`make install-cli` installs `pace` to `~/.local/bin/pace`. By default it reads
+`report.json` straight off disk (`~/Library/Application Support/Pace/report.json`)
+with no network call at all, and only fetches in-process (which may hit the
+Keychain directly) if that file doesn't exist yet. `--refresh` is the one path
+that talks to the app: it `POST`s `/v1/refresh` on the running app's loopback
+server and prints the fresh report; if the app isn't running, it falls back
+to the same in-process fetch.
 
 ```
 pace                # human-readable report
@@ -178,6 +190,10 @@ and pacing logic is fully unit-testable; `Pace` is the SwiftUI menu bar app;
 
 ## Limitations
 
+- v2's native macOS notifications aren't wired up in v3 — `NotificationGovernor`
+  (`Sources/PaceCore/NotificationGovernor.swift`) and `PaceNotifier`
+  (`Sources/Pace/PaceNotifier.swift`) are kept but unused; the popover is the
+  only surface for an ahead-of-pace alarm right now.
 - No App Store distribution or notarization — build it yourself from source
   rather than running an unsigned prebuilt binary from someone else.
 - No telemetry, no iCloud sync, no auto-update.
