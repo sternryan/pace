@@ -6,6 +6,9 @@ final class CoreTypesTests: XCTestCase {
         XCTAssertEqual(LaneKind.session.displayName, "Current session")
         XCTAssertEqual(LaneKind.allModelsWeek.displayName, "All models · week")
         XCTAssertEqual(LaneKind.fableWeek.displayName, "Fable · week")
+        XCTAssertEqual(LaneKind.overage.displayName, "Extra usage")
+        XCTAssertEqual(LaneKind.codexSession.displayName, "Codex 5h")
+        XCTAssertEqual(LaneKind.codexWeek.displayName, "Codex · week")
     }
 
     func testLaneKindIsHashable() {
