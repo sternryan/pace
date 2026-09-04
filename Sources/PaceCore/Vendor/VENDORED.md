@@ -57,9 +57,9 @@ about an unhandled resource file.
 `swift build` emits 6 "converting non-Sendable function value to '@Sendable ...' may introduce data
 races" warnings from vendored code, unchanged from upstream (not introduced by any local edit):
 
-- `Pricing/ModelPricingStore.swift:41,43` (`now: Date.init`, `bundledData: ModelPricingStore.bundledResourceData`)
-- `Providers/Claude/ClaudeLogUsageScanner.swift:90,102,112` (`parse: Self.parseFile`)
-- `Providers/Codex/CodexLogUsageScanner.swift:95` (`parse: Self.parseFile`)
+- `Pricing/ModelPricingStore.swift:43,45` (`now: Date.init`, `bundledData: ModelPricingStore.bundledResourceData`)
+- `Providers/Claude/ClaudeLogUsageScanner.swift:92,104,114` (`parse: Self.parseFile`)
+- `Providers/Codex/CodexLogUsageScanner.swift:97` (`parse: Self.parseFile`)
 
 Upstream builds under Swift 6 strict concurrency (macOS 15 target); under this package's language
 mode 5 / macOS 14 target the same static-method references to non-`@Sendable` closures surface as

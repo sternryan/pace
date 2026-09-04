@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "pace-cli", targets: ["PaceCLI"])
     ],
     targets: [
-        .target(name: "PaceCore", exclude: ["Vendor/OpenUsage/LICENSE"]),
+        .target(name: "PaceCore", exclude: ["Vendor/OpenUsage/LICENSE", "Vendor/VENDORED.md"]),
         .executableTarget(name: "Pace", dependencies: ["PaceCore"]),
         .executableTarget(name: "PaceCLI", dependencies: ["PaceCore"]),
         .testTarget(name: "PaceCoreTests", dependencies: ["PaceCore"],
