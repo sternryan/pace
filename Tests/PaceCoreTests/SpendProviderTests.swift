@@ -33,4 +33,36 @@ final class SpendProviderTests: XCTestCase {
         XCTAssertEqual(burn.tokens(for: .claude, from: now.addingTimeInterval(-3600), to: now), 4800)
         XCTAssertEqual(burn.hourly.filter { $0.provider == .codex }.count, 0)
     }
+
+    func testCodexHourlyBucketsAndUnparsedCount() async throws {
+        let (codexHome, now) = try FixtureWriter.codexSessions(messagesAgoSeconds: [600, 700], garbageLines: 1)
+
+        // A fixed, network-free pricing snapshot with an exact rate for the fixture's model — real
+        // dollar values don't matter here, only that the lines are priceable (else they're excluded
+        // from `entries`/`unknownModelsByDay` and the token assertion below would see 0, not 4800).
+        let pricing = ModelPricing(
+            supplement: PricingSupplement(),
+            primary: PricingCatalog(entries: [
+                "gpt-5": ModelRates(
+                    inputPerMillion: 1.25, outputPerMillion: 10, cacheWritePerMillion: 1.25, cacheReadPerMillion: 0.125
+                )
+            ]),
+            secondary: PricingCatalog()
+        )
+
+        let provider = SpendProvider(
+            claudeHome: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            codexHome: codexHome,
+            cacheDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            environment: ProcessEnvironmentReader(processEnvironment: [:]),
+            pricing: pricing
+        )
+
+        let snapshot = await provider.fetch(now: now)
+        XCTAssertEqual(snapshot.provider, .spend)
+        let burn = try XCTUnwrap(snapshot.burn)
+        XCTAssertEqual(burn.unparsedLines, 1)
+        XCTAssertEqual(burn.tokens(for: .codex, from: now.addingTimeInterval(-3600), to: now), 4800)
+        XCTAssertEqual(burn.hourly.filter { $0.provider == .claude }.count, 0)
+    }
 }
