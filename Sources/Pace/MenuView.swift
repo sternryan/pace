@@ -2,160 +2,86 @@ import SwiftUI
 import PaceCore
 
 struct MenuView: View {
-    @Bindable var appState: AppState
-    @Environment(\.openSettings) private var openSettings
+    @Bindable var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Claude Usage")
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 6)
-
-            ForEach(appState.paceReadings, id: \.lane.kind) { reading in
-                LaneRow(reading: reading)
-                Divider()
-            }
-
-            if let extra = appState.latestSnapshot?.extraUsage, extra.isEnabled, extra.dollarsUsed > 0 {
-                HStack {
-                    Text("Extra usage").font(.system(size: 12.5)).foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "$%.2f", extra.dollarsUsed)).font(.system(size: 12.5, weight: .semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            if let r = state.report {
+                if let h = r.headline {
+                    Text(h.verdict).font(.headline)
+                        .foregroundStyle(h.status == .ahead || h.status == .capped ? .red : .primary)
                 }
-                .padding(.horizontal, 16).padding(.vertical, 8)
+                if let a = r.advice { Text(a).font(.subheadline) }
                 Divider()
+                ForEach([ProviderID.claude, .codex], id: \.self) { p in
+                    let ws = r.windows.filter { $0.provider == p }
+                    if !ws.isEmpty {
+                        Text(p == .claude ? "Claude" : "Codex").font(.caption).foregroundStyle(.secondary)
+                        ForEach(ws, id: \.kind) { w in WindowRow(w: w) }
+                    }
+                }
+                Divider()
+                HStack {
+                    Text("smithy")
+                    Spacer()
+                    Text(laneLabel(r.laneState)).foregroundStyle(r.laneState == .serving ? .green : .orange)
+                }
+                if let b = r.burn, b.unparsedLines > 0 {
+                    Text("\(b.unparsedLines) unparsed log lines").font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(r.providers.filter { $0.error != nil }, id: \.provider) { p in
+                    Text("\(p.provider.rawValue): \(p.error!)").font(.caption).foregroundStyle(.orange)
+                }
+            } else {
+                Text("No data yet").foregroundStyle(.secondary)
             }
-
-            statusRow
-
             Divider()
-            MenuActionRow(title: "Refresh now", hint: appState.lastSuccessLabel) { appState.refreshNow() }
-            MenuActionRow(title: "Open claude.ai usage", hint: nil) { appState.openClaudeUsagePage() }
-            MenuActionRow(title: "Preferences…", hint: nil) { openSettings() }
-            MenuActionRow(title: "Quit", hint: nil) { NSApplication.shared.terminate(nil) }
+            HStack {
+                Text(state.report.map { PaceFormatter.ageLabel(since: $0.generatedAt, now: Date()) } ?? "")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Refresh") { state.refreshNow() }.keyboardShortcut("r")
+                SettingsLink { Text("Preferences") }
+                Button("Quit") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
+            }
         }
-        .frame(width: 300)
-        .padding(.bottom, 4)
+        .padding(12)
+        .frame(width: 380)
     }
 
-    @ViewBuilder
-    private var statusRow: some View {
-        if appState.isShowingCachedData, appState.status == .ok {
-            Text("Showing cached data\(appState.latestSnapshot.map { " · fetched \(PaceFormatter.ageLabel(since: $0.fetchedAt, now: Date()))" } ?? "")")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        }
-        switch appState.status {
-        case .needsLogin:
-            Text("Open Claude Code and run /login. Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .tokenExpired:
-            Text("Claude Code login expired — open Claude Code and run /login. Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .transient(let detail):
-            Text("Couldn't reach the usage API (\(detail)). Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .navigationFailed(let detail):
-            Text("\(detail). Showing last known values — open claude.ai directly to check.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .parseError(let detail):
-            Text("Couldn't refresh usage (\(detail)). Showing last known values.")
-                .font(.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, 16).padding(.vertical, 6)
-        case .ok:
-            EmptyView()
+    func laneLabel(_ s: LaneState?) -> String {
+        switch s {
+        case .serving?: return "serving"
+        case .leasedAway?: return "GPU leased"
+        default: return "unreachable"
         }
     }
 }
 
-private struct LaneRow: View {
-    let reading: PaceReading
+struct WindowRow: View {
+    let w: WindowVerdict
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(reading.lane.effectiveDisplayName).font(.system(size: 12.5)).foregroundStyle(.secondary)
+                Text(w.kind.displayName)
                 Spacer()
-                Text("\(reading.lane.percentUsed)%")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(reading.isAlarmed ? Color.red : Color.primary)
+                Text("\(w.percentUsed)%").monospacedDigit()
+                Text(w.source.rawValue).font(.caption2).foregroundStyle(.secondary)
             }
-
-            GeometryReader { geo in
+            GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.gray.opacity(0.3))
-                    // Semantic colors, not hardcoded near-white: the popover
-                    // background follows the system appearance, so white-on-white
-                    // made the fill and the pace tick invisible in light mode.
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(reading.isAlarmed ? Color.red : Color.primary)
-                        .frame(width: geo.size.width * CGFloat(reading.lane.percentUsed) / 100)
-                    if let percentElapsed = reading.percentElapsed {
-                        Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(0.9))
-                            .frame(width: 2)
-                            .offset(x: geo.size.width * CGFloat(percentElapsed) / 100)
+                    Rectangle().fill(.quaternary)
+                    Rectangle()
+                        .fill(w.status == .ahead || w.status == .capped ? .red : .accentColor)
+                        .frame(width: g.size.width * CGFloat(w.percentUsed) / 100)
+                    if let e = w.percentElapsed {
+                        Rectangle().fill(.primary).frame(width: 1).offset(x: g.size.width * CGFloat(e) / 100)
                     }
                 }
             }
-            .frame(height: 5)
-
-            HStack {
-                Text(PaceFormatter.resetLabel(for: reading.lane, now: Date()))
-                Spacer()
-                if let percentElapsed = reading.percentElapsed {
-                    Text("\(percentElapsed)% of window elapsed")
-                }
-            }
-            .font(.system(size: 11)).foregroundStyle(.secondary)
-
-            if let capDate = reading.projectedCapDate, let capBeforeReset = reading.capBeforeReset,
-               capBeforeReset || reading.isAlarmed {
-                Text("Projected to hit cap \(PaceFormatter.projectionLabel(capDate: capDate, resetDate: reading.lane.resetDate, capBeforeReset: capBeforeReset))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(capBeforeReset ? Color.red : Color.secondary)
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 8)
-    }
-}
-
-private struct MenuActionRow: View {
-    let title: String
-    let hint: String?
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: 12.5))
-                Spacer()
-                if let hint { Text(hint).font(.system(size: 11)).foregroundStyle(.secondary) }
-            }
-            .padding(.horizontal, 16).padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-#if DEBUG
-// Mock hot-lane data for visual verification — replaces hardcoding a
-// LaneUsage into AppState.init and reverting it afterward, which risked
-// shipping a forgotten test edit.
-#Preview("Hot lane") {
-    let now = Date()
-    let hotLane = LaneUsage(kind: .session, percentUsed: 70, resetDate: now.addingTimeInterval(3600), windowLength: 5 * 3600)
-    let coolLane = LaneUsage(kind: .allModelsWeek, percentUsed: 20, resetDate: now.addingTimeInterval(4 * 24 * 3600), windowLength: 7 * 24 * 3600)
-    let readings = [hotLane, coolLane].map { PaceCalculator.reading(for: $0, now: now) }
-    return VStack {
-        ForEach(readings, id: \.lane.kind) { reading in
-            Image(nsImage: IconRenderer.render(readings: [reading], status: .ok))
+            .frame(height: 6)
+            Text(w.verdict).font(.caption).foregroundStyle(.secondary)
         }
     }
-    .padding()
 }
-#endif
