@@ -11,7 +11,7 @@ public struct ReportStore {
     public struct Loaded: Equatable { public let report: PaceReport; public let age: TimeInterval; public let isStale: Bool }
 
     public func save(_ report: PaceReport) throws {
-        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys]
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data = try enc.encode(report)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let tmp = fileURL.appendingPathExtension("tmp")

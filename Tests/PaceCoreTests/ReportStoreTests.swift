@@ -26,4 +26,14 @@ final class ReportStoreTests: XCTestCase {
     func testMissingFileLoadsNil() {
         XCTAssertNil(ReportStore(directory: tmp()).load())
     }
+
+    func testSavedFileDoesNotEscapeSlashes() throws {
+        let dir = tmp(); let store = ReportStore(directory: dir)
+        let t = Date(timeIntervalSince1970: 1_000)
+        let r = PaceReport(generatedAt: t, headline: nil, advice: "move bulk/mechanical work to smithy (hearth:8085 local-heavy)",
+                           windows: [], laneState: nil, burn: nil, providers: [], stale: false)
+        try store.save(r)
+        let text = try String(contentsOf: dir.appendingPathComponent("report.json"), encoding: .utf8)
+        XCTAssertTrue(text.contains("move bulk/mechanical work to smithy (hearth:8085 local-heavy)"))
+    }
 }

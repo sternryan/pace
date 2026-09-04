@@ -1,9 +1,9 @@
 import Foundation
 
 public enum ReportTextFormatter {
-    public static func render(_ r: PaceReport, now: Date) -> String {
+    public static func render(_ r: PaceReport, now: Date, ageStale: Bool = false) -> String {
         var lines: [String] = []
-        lines.append("pace  \(PaceFormatter.ageLabel(since: r.generatedAt, now: now))\(r.stale ? "  [STALE]" : "")")
+        lines.append("pace  \(PaceFormatter.ageLabel(since: r.generatedAt, now: now))\(r.stale || ageStale ? "  [STALE]" : "")")
         if let h = r.headline { lines.append("HEADLINE  \(h.verdict)") }
         if let a = r.advice { lines.append("ADVICE    \(a)") }
         lines.append("")

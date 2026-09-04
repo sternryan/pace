@@ -86,7 +86,7 @@ public final class LoopbackServer: @unchecked Sendable {
 
     private func encode(_ r: PaceReport?) -> (Int, Data) {
         guard let r else { return (503, Data("{\"error\":\"no report yet\"}".utf8)) }
-        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys]
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return (200, (try? enc.encode(r)) ?? Data("{}".utf8))
     }
 

@@ -5,7 +5,7 @@ let args = CommandLine.arguments.dropFirst()
 let wantJSON = args.contains("--json")
 let wantRefresh = args.contains("--refresh")
 if args.contains("--help") || args.contains("-h") {
-    print("usage: pace [--json] [--refresh]\n  --json     print report.json verbatim\n  --refresh  force a fetch via the running app (127.0.0.1:6737), else fetch in-process")
+    print("usage: pace [--json] [--refresh]\n  --json     print report.json verbatim\n  --refresh  force a fetch via the running app (127.0.0.1:6737), else fetch in-process (may read the Keychain)")
     exit(0)
 }
 
@@ -21,6 +21,7 @@ let semaphore = DispatchSemaphore(value: 0)
 Task {
     let now = Date()
     var report: PaceReport? = nil
+    var ageStale = false
     if wantRefresh {
         if let data = await fetchViaApp(path: "/v1/refresh", method: "POST") {
             let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
@@ -29,15 +30,20 @@ Task {
             report = await RefreshCoordinator.live().refresh()
         }
     } else {
-        report = ReportStore(directory: ReportStore.defaultDirectory()).load()
-        if report == nil { report = await RefreshCoordinator.live().refresh() }
+        let store = ReportStore(directory: ReportStore.defaultDirectory())
+        if let loaded = store.loadWithAge(now: now) {
+            report = loaded.report
+            ageStale = loaded.isStale
+        } else {
+            report = await RefreshCoordinator.live().refresh()
+        }
     }
     guard let report else { FileHandle.standardError.write(Data("pace: no report available\n".utf8)); exit(2) }
     if wantJSON {
-        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys, .prettyPrinted]
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes, .prettyPrinted]
         print(String(decoding: try! enc.encode(report), as: UTF8.self))
     } else {
-        print(ReportTextFormatter.render(report, now: now), terminator: "")
+        print(ReportTextFormatter.render(report, now: now, ageStale: report.stale || ageStale), terminator: "")
     }
     semaphore.signal()
 }

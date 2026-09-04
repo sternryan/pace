@@ -16,4 +16,11 @@ final class ReportTextFormatterTests: XCTestCase {
         XCTAssertTrue(text.contains("smithy    serving"))
         XCTAssertTrue(text.contains("claude    api"))
     }
+
+    func testAgeStaleMarksHeaderEvenWhenReportItselfIsFresh() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let r = PaceReport(generatedAt: now, headline: nil, advice: nil, windows: [], laneState: .serving, burn: nil, providers: [], stale: false)
+        let text = ReportTextFormatter.render(r, now: now, ageStale: true)
+        XCTAssertTrue(text.contains("[STALE]"))
+    }
 }
