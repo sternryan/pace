@@ -5,7 +5,7 @@ import Observation
 import PaceCore
 
 enum DataSourceMode: String {
-    case api, browser
+    case api
 }
 
 @Observable
@@ -16,53 +16,33 @@ final class AppState {
     private(set) var lastSuccessAt: Date?
     private(set) var latestSnapshot: UsageSnapshot?
     private(set) var isShowingCachedData = false
-    /// Upgrades browser → api on manual refresh if Claude Code credentials
-    /// appear (the user installed Claude Code while Pace was running). Never
-    /// downgrades — an expired token is a remediation message, not a mode
-    /// switch.
-    private(set) var mode: DataSourceMode
+    private(set) var mode: DataSourceMode = .api
 
-    // Mode-dependent default; a user-customized value still wins (see
-    // migration note in init). API mode polls faster because a refresh is
-    // one small JSON GET, not a WebView page load.
+    // API mode polls faster because a refresh is one small JSON GET, not a
+    // WebView page load.
     var refreshInterval: TimeInterval {
         didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
     }
 
     private let store = KeychainCredentialStore()
     private let cache = SnapshotCache(directory: SnapshotCache.defaultDirectory())
-    private var source: UsageSource
-    private var scrapeSource: ScrapeUsageSource? // non-nil only in browser mode
+    private var source: ClaudeUsageFetching
     private var timer: Timer?
-    private var postLoginPollTask: Task<Void, Never>?
-    private var isFetching = false // timer + manual refresh can overlap; scrape has its own guard, API needs this one
+    private var isFetching = false // timer + manual refresh can overlap
     static let log = Logger(subsystem: "com.sternryan.pace", category: "fetch")
 
     private var notificationGovernor = NotificationGovernor()
     private let notifier = PaceNotifier()
 
-    init(source: UsageSource? = nil, mode: DataSourceMode? = nil) {
-        let resolvedMode = mode ?? (store.hasAnyItem() ? .api : .browser)
-        self.mode = resolvedMode
-
-        if let source {
-            self.source = source
-            self.scrapeSource = source as? ScrapeUsageSource
-        } else if resolvedMode == .api {
-            self.source = ApiUsageSource(store: store)
-            self.scrapeSource = nil
-        } else {
-            let scrape = ScrapeUsageSource()
-            self.source = scrape
-            self.scrapeSource = scrape
-        }
+    init(source: ClaudeUsageFetching? = nil) {
+        self.source = source ?? ApiUsageSource(store: store)
 
         // v1 wrote refreshInterval unconditionally, so an existing 360 can't
         // be told apart from "user chose 360" — migrate ONCE (guarded by a
         // marker key), otherwise every launch would clobber a deliberately
         // chosen 360 back to the API-mode default.
         let defaults = UserDefaults.standard
-        let modeDefault: TimeInterval = resolvedMode == .api ? 120 : 360
+        let modeDefault: TimeInterval = 120
         let stored = defaults.double(forKey: "refreshInterval")
         if !defaults.bool(forKey: "didMigrateRefreshIntervalV2") {
             defaults.set(true, forKey: "didMigrateRefreshIntervalV2")
@@ -91,28 +71,12 @@ final class AppState {
         }
     }
 
-    /// Timer-driven. No mode re-evaluation — the spec re-evaluates mode on
-    /// MANUAL refresh only, so browser-mode users don't pay a Keychain
-    /// attribute scan on the MainActor every tick.
     private func scheduledRefresh() {
         Task { await performFetch() }
     }
 
-    /// User-initiated. Re-evaluates mode first, upgrade-only (the user may
-    /// have installed Claude Code while Pace was running). Never during an
-    /// open sign-in — yanking the scraper mid-login would orphan the flow.
+    /// User-initiated refresh.
     func refreshNow() {
-        if mode == .browser, scrapeSource?.fetcher.isPresentingLogin != true, store.hasAnyItem() {
-            postLoginPollTask?.cancel()
-            let retiring = scrapeSource
-            mode = .api
-            source = ApiUsageSource(store: store)
-            scrapeSource = nil
-            // The WKWebView session existed solely for Pace's scraping; the
-            // API owns the data now, so drop the stored claude.ai cookies
-            // rather than leaving them on disk with no UI to clear them.
-            Task { await retiring?.fetcher.clearSession() }
-        }
         Task { await performFetch() }
     }
 
@@ -165,43 +129,8 @@ final class AppState {
         }
     }
 
-    // MARK: browser-mode only
-
-    func presentLogin() {
-        guard let fetcher = scrapeSource?.fetcher else { return }
-        fetcher.presentLoginWindow()
-        // Poll on a short cadence right after sign-in instead of waiting for
-        // the next scheduled tick — the one moment a slow cadence hurts.
-        // scrapeCurrentPageOutcome() reads the page without navigating, so
-        // watching for sign-in completion can't destroy the sign-in itself.
-        postLoginPollTask?.cancel()
-        postLoginPollTask = Task { @MainActor in
-            while fetcher.isPresentingLogin {
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                if Task.isCancelled { return }
-                guard fetcher.isPresentingLogin else { return }
-                if let outcome = await fetcher.scrapeCurrentPageOutcome() {
-                    fetcher.hideLoginWindow()
-                    if case .success(let lanes) = outcome {
-                        applySnapshot(UsageSnapshot(lanes: lanes, extraUsage: nil, fetchedAt: Date()),
-                                      fromCache: false)
-                    }
-                    return
-                }
-            }
-        }
-    }
-
     func openClaudeUsagePage() {
         NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
-    }
-
-    func signOut() {
-        guard let fetcher = scrapeSource?.fetcher else { return }
-        Task {
-            await fetcher.clearSession()
-            status = .needsLogin
-        }
     }
 
     var lastSuccessLabel: String {

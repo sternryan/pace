@@ -47,8 +47,8 @@ struct MenuView: View {
         }
         switch appState.status {
         case .needsLogin:
-            Button("Sign in to claude.ai") { appState.presentLogin() }
-                .buttonStyle(.plain)
+            Text("Open Claude Code and run /login. Showing last known values.")
+                .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 6)
         case .tokenExpired:
             Text("Claude Code login expired — open Claude Code and run /login. Showing last known values.")

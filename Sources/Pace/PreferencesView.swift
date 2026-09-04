@@ -8,8 +8,7 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
-            LabeledContent("Data source",
-                           value: appState.mode == .api ? "Claude Code API" : "claude.ai browser session")
+            LabeledContent("Data source", value: "Claude Code API")
 
             Stepper(value: $appState.refreshInterval, in: 60...1800, step: 60) {
                 Text("Refresh every \(Int(appState.refreshInterval / 60)) min")
@@ -36,9 +35,6 @@ struct PreferencesView: View {
                 Text(launchAtLoginError).font(.caption).foregroundStyle(.red)
             }
 
-            if appState.mode == .browser {
-                Button("Sign out of claude.ai") { appState.signOut() }
-            }
         }
         .padding(20)
         .frame(width: 320)
