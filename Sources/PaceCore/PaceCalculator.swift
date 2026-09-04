@@ -38,3 +38,27 @@ public enum PaceCalculator {
                            capBeforeReset: capBeforeReset)
     }
 }
+
+public enum PaceStatus: String, Codable, Sendable { case tooEarly, onPace, ahead, capped }
+
+extension PaceCalculator {
+    /// Spec §3.3: 15-minute guard, 5-point slack.
+    public static let minimumElapsedForStatus: TimeInterval = 15 * 60
+    public static let slackPercent = 5
+
+    public static func elapsedFraction(for lane: LaneUsage, now: Date) -> Double? {
+        guard let w = lane.windowLength, w > 0 else { return nil }
+        let start = lane.resetDate.addingTimeInterval(-w)
+        return max(0, min(now.timeIntervalSince(start), w)) / w
+    }
+
+    public static func status(for lane: LaneUsage, now: Date) -> PaceStatus {
+        if lane.percentUsed >= 100 { return .capped }
+        guard let w = lane.windowLength, w > 0 else { return .onPace }
+        let start = lane.resetDate.addingTimeInterval(-w)
+        let elapsed = now.timeIntervalSince(start)
+        if elapsed < minimumElapsedForStatus { return .tooEarly }
+        let elapsedPct = Int((max(0, min(elapsed, w)) / w) * 100)
+        return lane.percentUsed > elapsedPct + slackPercent ? .ahead : .onPace
+    }
+}

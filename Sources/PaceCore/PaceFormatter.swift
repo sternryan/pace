@@ -26,4 +26,13 @@ public enum PaceFormatter {
         let hours = minutes / 60
         return hours < 48 ? "\(hours)h ago" : "\(hours / 24)d ago"
     }
+
+    /// "14:10" if same local day as `now`, else "Thu 14:10".
+    public static func shortClock(_ date: Date, now: Date) -> String {
+        let cal = Calendar.current
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = cal.isDate(date, inSameDayAs: now) ? "HH:mm" : "EEE HH:mm"
+        return f.string(from: date)
+    }
 }
