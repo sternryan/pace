@@ -20,8 +20,11 @@ public enum PaceCalculator {
         let percentElapsed = Int((elapsed / windowLength) * 100)
         // Single source of truth for "ahead" (spec §3.3's 15-minute guard,
         // 5-point slack) — this used to be a separate, looser rule (10-minute
-        // guard, no slack) that could disagree with `status(for:now:)`.
-        let ahead = status(for: lane, now: now) == .ahead
+        // guard, no slack) that could disagree with `status(for:now:)`. A
+        // capped lane must still alarm the v2 icon path, so it counts as
+        // ahead here even though `status` reports it as its own case.
+        let laneStatus = status(for: lane, now: now)
+        let ahead = laneStatus == .ahead || laneStatus == .capped
 
         // Projection is decoupled from the ahead verdict: an ahead-of-pace
         // lane's cap always lands before the reset (that's what ahead means),
