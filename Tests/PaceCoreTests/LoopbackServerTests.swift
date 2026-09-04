@@ -48,6 +48,12 @@ final class LoopbackServerTests: XCTestCase {
     /// `active` counter in `handle` but must decrement it on the closed-receive path too —
     /// otherwise a client that connects and drops (a port scanner, a browser prefetch,
     /// a client that gave up) permanently eats one of the `maxConnections` (8) slots.
+    /// Nine such connections is deliberately one more than `maxConnections` (8): on
+    /// pre-fix code every one of the nine leaks, so the counter is pinned at (at least)
+    /// 9 > 8 and the next real request is refused by the `active < maxConnections` guard
+    /// (`conn.cancel()`, no response at all — the client sees a connection reset, not a
+    /// clean HTTP error). On fixed code every dropped connection decrements back to 0,
+    /// so the next request always gets a normal 200.
     func testClosedConnectionDoesNotLeakConnectionCapacity() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let report = PaceReport(generatedAt: now, headline: nil, advice: nil, windows: [], laneState: .serving, burn: nil, providers: [], stale: false)
@@ -56,18 +62,18 @@ final class LoopbackServerTests: XCTestCase {
         defer { server.stop() }
         let port = try await server.boundPort()
 
-        let conn = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
-        let connQueue = DispatchQueue(label: "test.loopback.client.drop")
-        conn.start(queue: connQueue)
-        try await waitReady(conn)
-        conn.cancel()
-        // Give the server a moment to observe the close and decrement its counter.
+        for _ in 0..<9 {
+            let conn = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            let connQueue = DispatchQueue(label: "test.loopback.client.drop")
+            conn.start(queue: connQueue)
+            try await waitReady(conn)
+            conn.cancel()
+        }
+        // Give the server a moment to observe each close and decrement its counter.
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        for _ in 0..<9 {
-            let (_, resp) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/v1/report")!)
-            XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
-        }
+        let (_, resp) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/v1/report")!)
+        XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
     }
 
     // MARK: - NWConnection test helpers
