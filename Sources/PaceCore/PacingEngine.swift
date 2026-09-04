@@ -4,7 +4,11 @@ public enum PacingEngine {
     static let minimumUsedForBurnProjection = 2
 
     public static func report(snapshots: [ProviderSnapshot], now: Date) -> PaceReport {
-        let byProvider = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.provider, $0) })
+        // A duplicate provider in the input must not trap — keep whichever
+        // snapshot was fetched more recently.
+        let byProvider = Dictionary(snapshots.map { ($0.provider, $0) }) { a, b in
+            a.fetchedAt >= b.fetchedAt ? a : b
+        }
         let burn = byProvider[.spend]?.burn
         let laneState = byProvider[.smithy]?.laneState
 
@@ -37,12 +41,22 @@ public enum PacingEngine {
             let start = lane.resetDate.addingTimeInterval(-w)
             let remainingPct = Double(100 - lane.percentUsed)
             if let burn, lane.percentUsed >= minimumUsedForBurnProjection {
-                let attributed = burn.tokens(for: lane.kind.provider, from: start, to: now)
-                let ratePerSec = burn.rate(for: lane.kind.provider, now: now)
-                if attributed > 0, ratePerSec > 0 {
-                    let tokensPerPct = Double(attributed) / Double(lane.percentUsed)
-                    cap = now.addingTimeInterval(remainingPct * tokensPerPct / ratePerSec)
-                    basis = .burnRate
+                // The burn series only covers a trailing window (see
+                // BurnSeries.hourly). A lane whose window is longer than that
+                // coverage (a weekly lane against a few hours of buckets)
+                // would collapse "tokens since window start" into a tiny
+                // slice of real usage and wildly overstate the rate — only
+                // trust burnRate when the earliest bucket for this provider
+                // actually reaches back to the window start.
+                let earliestStart = burn.hourly.filter { $0.provider == lane.kind.provider }.map(\.start).min()
+                if let earliestStart, earliestStart <= start {
+                    let attributed = burn.tokens(for: lane.kind.provider, from: start, to: now)
+                    let ratePerSec = burn.rate(for: lane.kind.provider, now: now)
+                    if attributed > 0, ratePerSec > 0 {
+                        let tokensPerPct = Double(attributed) / Double(lane.percentUsed)
+                        cap = now.addingTimeInterval(remainingPct * tokensPerPct / ratePerSec)
+                        basis = .burnRate
+                    }
                 }
             }
             if cap == nil, let c = PaceCalculator.reading(for: lane, now: now).projectedCapDate {

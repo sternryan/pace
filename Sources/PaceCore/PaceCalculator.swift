@@ -4,7 +4,9 @@ public enum PaceCalculator {
     /// No ahead-of-pace verdict (and no projection) until the window holds
     /// this much history — a burst in the first minutes of a fresh window
     /// says nothing about sustained pace and flashed the icon red in v1.
-    public static let minimumElapsedForVerdict: TimeInterval = 10 * 60
+    /// Kept equal to `minimumElapsedForStatus` so v2's `reading(for:now:)`
+    /// and the newer `status(for:now:)` never disagree about "too early".
+    public static let minimumElapsedForVerdict: TimeInterval = minimumElapsedForStatus
 
     public static func reading(for lane: LaneUsage, now: Date) -> PaceReading {
         guard let windowLength = lane.windowLength, windowLength > 0 else {
@@ -16,7 +18,10 @@ public enum PaceCalculator {
         let windowStart = lane.resetDate.addingTimeInterval(-windowLength)
         let elapsed = max(0, min(now.timeIntervalSince(windowStart), windowLength))
         let percentElapsed = Int((elapsed / windowLength) * 100)
-        let ahead = elapsed >= minimumElapsedForVerdict && lane.percentUsed > percentElapsed
+        // Single source of truth for "ahead" (spec §3.3's 15-minute guard,
+        // 5-point slack) — this used to be a separate, looser rule (10-minute
+        // guard, no slack) that could disagree with `status(for:now:)`.
+        let ahead = status(for: lane, now: now) == .ahead
 
         // Projection is decoupled from the ahead verdict: an ahead-of-pace
         // lane's cap always lands before the reset (that's what ahead means),

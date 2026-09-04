@@ -103,4 +103,42 @@ final class PacingEngineTests: XCTestCase {
         let r = PacingEngine.report(snapshots: [snap(.claude, lanes: [l])], now: now)
         XCTAssertTrue(r.windows[0].verdict.hasPrefix("Fable · week: 71% used, 54% elapsed, caps "))
     }
+
+    // Fix round 1, finding #1: BurnSeries.hourly only covers a trailing
+    // window (documented as 8 days). A weekly lane's "since window start"
+    // burn attribution must not trust a series that doesn't reach back that
+    // far — it collapses into a false, wildly-inflated rate.
+    func testWeeklyLaneWithOnlySixHoursOfBurnFallsBackToPercentRate() {
+        let l = lane(.fableWeek, used: 50, windowLength: 604800, elapsed: 302400) // 3.5 days elapsed of 7
+        let buckets = (1...6).map { h in
+            HourBucket(start: now.addingTimeInterval(-Double(h) * 3600), provider: .claude, tokens: 50_000, costUSD: 1)
+        }
+        let burn = BurnSeries(hourly: buckets, daily: [], unparsedLines: 0)
+        let report = PacingEngine.report(snapshots: [snap(.claude, lanes: [l]), snap(.spend, burn: burn)], now: now)
+        let v = report.windows.first { $0.kind == .fableWeek }!
+        XCTAssertEqual(v.projectionBasis, .percentRate)
+    }
+
+    func testWeeklyLaneWithBurnSpanningBackPastWindowStartUsesBurnRate() {
+        // Small elapsed window so a single hourly bucket can legitimately
+        // reach back to windowStart.
+        let l = lane(.fableWeek, used: 10, windowLength: 604800, elapsed: 3600)
+        let burn = BurnSeries(hourly: [HourBucket(start: now.addingTimeInterval(-3600), provider: .claude, tokens: 100_000, costUSD: 1)],
+                              daily: [], unparsedLines: 0)
+        let report = PacingEngine.report(snapshots: [snap(.claude, lanes: [l]), snap(.spend, burn: burn)], now: now)
+        let v = report.windows.first { $0.kind == .fableWeek }!
+        XCTAssertEqual(v.projectionBasis, .burnRate)
+    }
+
+    // Fix round 1, finding #2: a duplicate provider in the snapshot list must
+    // not trap Dictionary(uniqueKeysWithValues:) — keep the fresher one.
+    func testDuplicateProviderSnapshotsKeepTheFresherOne() {
+        let older = ProviderSnapshot(provider: .claude, fetchedAt: now.addingTimeInterval(-60), source: .api,
+                                     lanes: [lane(.session, used: 10, windowLength: 18000, elapsed: 9000)])
+        let newer = ProviderSnapshot(provider: .claude, fetchedAt: now, source: .api,
+                                     lanes: [lane(.session, used: 99, windowLength: 18000, elapsed: 9000)])
+        let report = PacingEngine.report(snapshots: [older, newer], now: now)
+        XCTAssertEqual(report.windows.count, 1)
+        XCTAssertEqual(report.windows.first?.percentUsed, 99)
+    }
 }
