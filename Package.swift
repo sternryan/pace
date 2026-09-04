@@ -7,7 +7,7 @@ let package = Package(
     products: [
         .library(name: "PaceCore", targets: ["PaceCore"]),
         .executable(name: "Pace", targets: ["Pace"]),
-        .executable(name: "pace", targets: ["PaceCLI"])
+        .executable(name: "pace-cli", targets: ["PaceCLI"])
     ],
     targets: [
         .target(name: "PaceCore"),

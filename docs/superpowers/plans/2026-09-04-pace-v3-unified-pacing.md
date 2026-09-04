@@ -87,7 +87,7 @@ let package = Package(
     products: [
         .library(name: "PaceCore", targets: ["PaceCore"]),
         .executable(name: "Pace", targets: ["Pace"]),
-        .executable(name: "pace", targets: ["PaceCLI"])
+        .executable(name: "pace-cli", targets: ["PaceCLI"])
     ],
     targets: [
         .target(name: "PaceCore"),
@@ -1783,15 +1783,15 @@ semaphore.wait()
 
 ```makefile
 cli:
-	swift build -c release --product pace
+	swift build -c release --product pace-cli
 
 install-cli: cli
 	mkdir -p "$$HOME/.local/bin"
-	cp .build/release/pace "$$HOME/.local/bin/pace"
+	cp .build/release/pace-cli "$$HOME/.local/bin/pace"
 	@echo "Installed ~/.local/bin/pace"
 ```
 
-- [ ] **Step 5: Run** `make test && make cli && .build/release/pace --help` → PASS, usage printed. **Step 6: Commit** `git add -A && git commit -m "feat(cli): pace one-shot report (text/json, --refresh via loopback)"`
+- [ ] **Step 5: Run** `make test && make cli && .build/release/pace-cli --help` → PASS, usage printed. **Step 6: Commit** `git add -A && git commit -m "feat(cli): pace one-shot report (text/json, --refresh via loopback)"`
 
 ---
 
