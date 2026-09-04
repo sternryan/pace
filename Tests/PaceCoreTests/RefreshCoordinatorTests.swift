@@ -6,6 +6,39 @@ private struct StubProvider: Provider {
     func fetch(now: Date) async -> ProviderSnapshot { snapshot }
 }
 
+/// Sleeps `sleepMillis` on its `sleepOnCall`-th invocation (1-based), returns
+/// immediately every other call. Used to make one `refresh()` call slower
+/// than another that races it, without needing two different coordinators.
+private final class ConditionalSleepProvider: Provider, @unchecked Sendable {
+    let id: ProviderID
+    private let source: SnapshotSource
+    private let lock = NSLock()
+    private var callIndex = 0
+    private let sleepOnCall: Int
+    private let sleepMillis: UInt64
+
+    init(id: ProviderID, source: SnapshotSource = .api, sleepOnCall: Int, sleepMillis: UInt64) {
+        self.id = id; self.source = source; self.sleepOnCall = sleepOnCall; self.sleepMillis = sleepMillis
+    }
+
+    func fetch(now: Date) async -> ProviderSnapshot {
+        let idx: Int = lock.withLock { callIndex += 1; return callIndex }
+        if idx == sleepOnCall { try? await Task.sleep(nanoseconds: sleepMillis * 1_000_000) }
+        return ProviderSnapshot(provider: id, fetchedAt: now, source: source, lanes: [])
+    }
+}
+
+/// Sleeps every call. Used to hold a single in-flight refresh open long
+/// enough to cancel it mid-flight.
+private struct AlwaysSleepingProvider: Provider {
+    let id: ProviderID
+    let sleepMillis: UInt64
+    func fetch(now: Date) async -> ProviderSnapshot {
+        try? await Task.sleep(nanoseconds: sleepMillis * 1_000_000)
+        return ProviderSnapshot(provider: id, fetchedAt: now, source: .api, lanes: [])
+    }
+}
+
 final class RefreshCoordinatorTests: XCTestCase {
     func testRefreshRunsAllProvidersAndPersists() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -40,5 +73,49 @@ final class RefreshCoordinatorTests: XCTestCase {
         let r = await c.refresh()
         XCTAssertEqual(r.windows.map(\.kind), [.codexSession])
         XCTAssertTrue(r.stale)
+    }
+
+    func testOlderRefreshDoesNotOverwriteNewer() async {
+        let t1 = Date(timeIntervalSince1970: 1_800_000_000)
+        let t2 = t1.addingTimeInterval(60)
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var calls = 0
+            func next() -> Int { lock.withLock { calls += 1; return calls } }
+        }
+        let counter = Counter()
+        let clock: @Sendable () -> Date = { counter.next() == 1 ? t1 : t2 }
+        // The first refresh() call (A) sleeps 200ms before its snapshot
+        // comes back; the second (B), which reads a later clock value,
+        // returns immediately and should win even though A is still in
+        // flight when B publishes.
+        let provider = ConditionalSleepProvider(id: .claude, sleepOnCall: 1, sleepMillis: 200)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let c = RefreshCoordinator(providers: [provider], store: ReportStore(directory: dir), clock: clock)
+
+        async let a: PaceReport = c.refresh()
+        async let b: PaceReport = c.refresh()
+        _ = await (a, b)
+
+        XCTAssertEqual(c.latest?.generatedAt, t2)
+        XCTAssertEqual(ReportStore(directory: dir).load()?.generatedAt, t2)
+    }
+
+    func testCancelledRefreshDoesNotPublishOrPersist() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let provider = AlwaysSleepingProvider(id: .claude, sleepMillis: 200)
+        let c = RefreshCoordinator(providers: [provider], store: ReportStore(directory: dir), clock: { now })
+
+        XCTAssertNil(c.latest)
+        XCTAssertNil(ReportStore(directory: dir).load())
+
+        let task = Task { await c.refresh() }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        task.cancel()
+        _ = await task.value
+
+        XCTAssertNil(c.latest)
+        XCTAssertNil(ReportStore(directory: dir).load())
     }
 }
