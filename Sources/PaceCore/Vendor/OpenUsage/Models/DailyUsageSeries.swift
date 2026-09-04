@@ -52,6 +52,11 @@ struct ModelUsageEntry: Hashable, Sendable, Codable {
     var totalTokens: Int
     var costUSD: Double?
     var variants: [ModelUsageVariant]? = nil
+    /// Local edit (pace Task 8, not upstream): the priced line's own timestamp, set only on the
+    /// per-message `LogUsageScan.entries` list the native scanners build for hourly burn-rate
+    /// buckets. Nil on every day-bucketed `ModelUsageEntry` (the `DailyModelUsageEntry.models`
+    /// breakdown), which has no single timestamp to carry.
+    var timestamp: Date? = nil
 }
 
 /// One raw slug inside a grouped `ModelUsageEntry` — the "per thinking effort" line of the hover
@@ -112,14 +117,30 @@ struct LogUsageScan: Sendable {
     /// `yyyy-MM-dd` day key → models without known pricing, whether excluded or estimated with a fallback.
     var unknownModelsByDay: [String: Set<String>]
     var fallbackPricingModelsByDay: [String: Set<String>]?
+    /// Local edit (pace Task 8, not upstream): every priced usage line, timestamped, in scan order —
+    /// upstream only carries day-bucketed totals (`series`/`modelUsage`), which can't build the
+    /// hourly `BurnSeries` buckets pace's pacing engine needs for burn-rate projection. Populated by
+    /// `ClaudeLogUsageScanner.aggregate`/`CodexLogUsageScanner.aggregate` alongside the existing
+    /// per-day accumulation, from the same priced lines (unpriceable lines are excluded here too,
+    /// matching the day-bucket invariant that every counted row is priced).
+    var entries: [ModelUsageEntry] = []
+    /// Local edit (pace Task 8, not upstream): count of session-log lines that failed to parse as
+    /// JSON at all (a genuinely corrupt/foreign line), set by the scanner's `scan()` after unwrapping
+    /// its parse results. Surfaced in the UI so a silent zero can't pass as "no bad data" (memory
+    /// `feedback_self_alarming_monitors`: a scan that can't tell "no logs" from "logs I couldn't
+    /// read" should say so, not report a plausible-looking figure).
+    var unparsedLineCount: Int = 0
 
     init(
         series: DailyUsageSeries, modelUsage: ModelUsageSeries? = nil,
-        unknownModelsByDay: [String: Set<String>], fallbackPricingModelsByDay: [String: Set<String>]? = nil
+        unknownModelsByDay: [String: Set<String>], fallbackPricingModelsByDay: [String: Set<String>]? = nil,
+        entries: [ModelUsageEntry] = [], unparsedLineCount: Int = 0
     ) {
         self.series = series
         self.modelUsage = modelUsage
         self.unknownModelsByDay = unknownModelsByDay
         self.fallbackPricingModelsByDay = fallbackPricingModelsByDay
+        self.entries = entries
+        self.unparsedLineCount = unparsedLineCount
     }
 }

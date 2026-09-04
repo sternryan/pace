@@ -43,7 +43,7 @@ import Foundation
 actor CodexLogUsageScanner {
     private let environment: EnvironmentReading
     private let homeDirectory: @Sendable () -> URL
-    private let scanner: IncrementalJSONLScanner<Event>
+    private let scanner: IncrementalJSONLScanner<EventOrUnparsed>
 
     /// One turn's token usage, normalized from a `token_count` line (deltas already applied).
     /// `isFast` records whether the session was on the fast/priority service tier when the turn
@@ -60,11 +60,21 @@ actor CodexLogUsageScanner {
         var isFast: Bool = false
     }
 
+    /// Local edit (pace Task 8, not upstream): wraps a parsed `Event`, or `nil` to mark a line that
+    /// matched none of the parser's known line-type markers and also failed to decode as JSON at all
+    /// — see `ClaudeLogUsageScanner.EntryOrUnparsed` for why this travels through the `[Item]`
+    /// pipeline itself rather than a side channel.
+    struct EventOrUnparsed: Codable, Sendable {
+        var event: Event?
+    }
+
     /// Multi-account cards that resolve the same Codex homes share this actor and parse each rollout
     /// once. The version is the parser schema version; bump it when `Event` semantics change.
-    private static let sharedScanner = IncrementalJSONLScanner<Event>(
+    /// Bumped 3 -> 4 for the `EventOrUnparsed` wrapper change (pace Task 8): the persisted record
+    /// shape changed, so an old on-disk cache must be treated as a schema mismatch and rebuilt.
+    private static let sharedScanner = IncrementalJSONLScanner<EventOrUnparsed>(
         logTag: LogTag.plugin("codex"),
-        persistence: JSONLScanCachePersistence(namespace: "codex", schemaVersion: 3)
+        persistence: JSONLScanCachePersistence(namespace: "codex", schemaVersion: 4)
     )
 
     static func flushPersistentCacheWrites() async {
@@ -74,7 +84,7 @@ actor CodexLogUsageScanner {
     init(
         environment: EnvironmentReading = ProcessEnvironmentReader(),
         homeDirectory: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
-        incrementalScanner: IncrementalJSONLScanner<Event>? = nil
+        incrementalScanner: IncrementalJSONLScanner<EventOrUnparsed>? = nil
     ) {
         self.environment = environment
         self.homeDirectory = homeDirectory
@@ -94,19 +104,23 @@ actor CodexLogUsageScanner {
         let files = Self.sessionFiles(homes: homes)
         guard !files.isEmpty else {
             _ = await scanner.items(
-                from: [], since: since, cacheIdentity: identity, parse: Self.parseFile
+                from: [], since: since, cacheIdentity: identity,
+                parse: { Self.parseFile($0).map { EventOrUnparsed(event: $0) } }
             )
             return nil
         }
 
-        guard let events = await scanner.items(
+        guard let wrapped = await scanner.items(
             from: files,
             since: since,
             cacheIdentity: identity,
             initialState: CodexLogFileParser(),
             parse: { data, state in state.parse(data) }
         ), !Task.isCancelled else { return nil }
-        return Self.aggregate(events: events, since: since, pricing: pricing, fallbackModel: fallbackModel)
+        let events = wrapped.compactMap(\.event)
+        var result = Self.aggregate(events: events, since: since, pricing: pricing, fallbackModel: fallbackModel)
+        result.unparsedLineCount = wrapped.count - events.count
+        return result
     }
 
     // MARK: - Discovery
@@ -164,7 +178,7 @@ actor CodexLogUsageScanner {
     /// `task_started` — see the type doc). A session that never records a tier is standard.
     static func parseFile(_ data: Data) -> [Event] {
         var parser = CodexLogFileParser()
-        return parser.parse(data)
+        return parser.parse(data).compactMap(\.event)
     }
 
     /// Token fields of a `token_count` usage object, tolerating the older field spellings ccusage

@@ -28,6 +28,9 @@ extension CodexLogUsageScanner {
         }
         var seen: Set<EventKey> = []
         var accumulator = DailyUsageAccumulator()
+        // Local edit (pace Task 8, not upstream): per-message timestamped rows alongside the existing
+        // day-bucketed accumulation — see `LogUsageScan.entries`.
+        var timestamped: [ModelUsageEntry] = []
 
         for event in events where event.timestamp >= since {
             let key = EventKey(
@@ -67,9 +70,14 @@ extension CodexLogUsageScanner {
                 day: day, tokens: event.total, cost: eventCost, model: model,
                 fallbackPricingModel: usedFallback
             )
+            timestamped.append(ModelUsageEntry(
+                model: model, totalTokens: event.total, costUSD: eventCost, timestamp: event.timestamp
+            ))
         }
 
-        return accumulator.build()
+        var scan = accumulator.build()
+        scan.entries = timestamped
+        return scan
     }
 
     /// Native rollout events count cached tokens inside `input`; the shared estimator takes disjoint

@@ -16,8 +16,14 @@ struct CodexLogFileParser: Sendable {
     private var sawSessionMeta = false
     private var replayGate: ChildReplayGate?
 
-    mutating func parse(_ data: Data) -> [CodexLogUsageScanner.Event] {
-        var events: [CodexLogUsageScanner.Event] = []
+    /// Local edit (pace Task 8, not upstream): returns `[CodexLogUsageScanner.EventOrUnparsed]`
+    /// instead of `[Event]` so a line that matches none of the known line-type markers (the
+    /// overwhelming majority of a rollout — command output, tool results, etc., all silently and
+    /// correctly skipped exactly as upstream) but ALSO fails to decode as JSON at all — a genuinely
+    /// corrupt/foreign line — is counted rather than dropped, plus a line that matches a marker but
+    /// fails JSON decode. `CodexLogUsageScanner.scan()` unwraps this back into `[Event]` plus a count.
+    mutating func parse(_ data: Data) -> [CodexLogUsageScanner.EventOrUnparsed] {
+        var events: [CodexLogUsageScanner.EventOrUnparsed] = []
 
         for line in data.split(separator: UInt8(ascii: "\n")) {
             let isTurnContext = line.range(of: Self.turnContextMarker) != nil
@@ -26,8 +32,14 @@ struct CodexLogFileParser: Sendable {
             let isThreadSettings = line.range(of: Self.threadSettingsMarker) != nil
             guard isTurnContext || isSessionMeta || isTaskStarted || isThreadSettings
                 || line.range(of: Self.tokenCountMarker) != nil
-            else { continue }
-            guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { continue }
+            else {
+                if Self.isUnparsableLine(line) { events.append(.init(event: nil)) }
+                continue
+            }
+            guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else {
+                events.append(.init(event: nil))
+                continue
+            }
 
             let type = object["type"] as? String
             let payload = object["payload"] as? [String: Any]
@@ -102,7 +114,7 @@ struct CodexLogFileParser: Sendable {
             let parsedModel = Self.modelName(in: payload) ?? info.flatMap(Self.modelName(in:))
             let model = CodexLogUsageScanner.resolveModel(parsed: parsedModel, currentModel: &currentModel)
 
-            events.append(CodexLogUsageScanner.Event(
+            events.append(.init(event: CodexLogUsageScanner.Event(
                 timestamp: timestamp,
                 model: model,
                 pricingModel: model == "codex-auto-review"
@@ -114,9 +126,19 @@ struct CodexLogFileParser: Sendable {
                 reasoning: usage.reasoning,
                 total: usage.total,
                 isFast: currentTierIsFast
-            ))
+            )))
         }
         return events
+    }
+
+    /// `true` for a non-blank line that isn't valid JSON at all — the "this line was garbage" signal
+    /// behind `LogUsageScan.unparsedLineCount`. Mirrors `ClaudeLogUsageScanner.isUnparsableLine`.
+    private static func isUnparsableLine(_ line: Data.SubSequence) -> Bool {
+        let isBlank = line.allSatisfy {
+            $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t") || $0 == UInt8(ascii: "\r")
+        }
+        guard !isBlank else { return false }
+        return (try? JSONSerialization.jsonObject(with: Data(line))) == nil
     }
 
     private static func serviceTier(in payload: [String: Any]?) -> String? {

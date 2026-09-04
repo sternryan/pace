@@ -24,7 +24,7 @@ import Foundation
 actor ClaudeLogUsageScanner {
     private let environment: EnvironmentReading
     private let homeDirectory: @Sendable () -> URL
-    private let scanner: IncrementalJSONLScanner<Entry>
+    private let scanner: IncrementalJSONLScanner<EntryOrUnparsed>
     /// Scoped provider instances pass their stable parse-source identity here. Account or time filters
     /// over the same physical roots deliberately pass the same value and share whole-file records.
     private let cacheIdentityOverride: String?
@@ -50,11 +50,23 @@ actor ClaudeLogUsageScanner {
         var model: String?
     }
 
+    /// Local edit (pace Task 8, not upstream): wraps a parsed `Entry`, or `nil` to mark a line that
+    /// failed to decode as JSON at all — the incremental scanner's cache is keyed on `Item`, so the
+    /// "this line was garbage" signal has to travel through the same `[Item]` pipeline as the real
+    /// entries rather than a side channel, or it wouldn't survive a cache hit. `scan()` unwraps this
+    /// into `entries` (for dedup/aggregation) and a plain count (`LogUsageScan.unparsedLineCount`).
+    struct EntryOrUnparsed: Codable, Sendable {
+        var entry: Entry?
+    }
+
     /// Cards that read the same Claude home share one actor, so the first scan populates both the
     /// in-memory and disk caches and the rest reuse it. Tests inject an isolated memory-only scanner.
-    private static let sharedScanner = IncrementalJSONLScanner<Entry>(
+    /// `schemaVersion` bumped 1 -> 2 for the `EntryOrUnparsed` wrapper change (pace Task 8): the
+    /// persisted record shape changed, so an old on-disk cache must be treated as a schema mismatch
+    /// and rebuilt rather than misdecoded.
+    private static let sharedScanner = IncrementalJSONLScanner<EntryOrUnparsed>(
         logTag: LogTag.plugin("claude"),
-        persistence: JSONLScanCachePersistence(namespace: "claude", schemaVersion: 1)
+        persistence: JSONLScanCachePersistence(namespace: "claude", schemaVersion: 2)
     )
 
     static func flushPersistentCacheWrites() async {
@@ -64,7 +76,7 @@ actor ClaudeLogUsageScanner {
     init(
         environment: EnvironmentReading = ProcessEnvironmentReader(),
         homeDirectory: @escaping @Sendable () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
-        incrementalScanner: IncrementalJSONLScanner<Entry>? = nil,
+        incrementalScanner: IncrementalJSONLScanner<EntryOrUnparsed>? = nil,
         cacheIdentityOverride: String? = nil,
         accountUUID: String? = nil,
         organizationUUID: String? = nil,
@@ -107,13 +119,16 @@ actor ClaudeLogUsageScanner {
         }
 
         // Entries come back concatenated in path-sorted file order, so dedup's keep-first is deterministic.
-        guard let entries = await scanner.items(
+        guard let wrapped = await scanner.items(
             from: files,
             since: since,
             cacheIdentity: cacheIdentity,
             parse: Self.parseFile
         ), !Task.isCancelled else { return nil }
-        return Self.aggregate(entries: Self.dedup(entries), since: since, pricing: pricing)
+        let entries = wrapped.compactMap(\.entry)
+        var result = Self.aggregate(entries: Self.dedup(entries), since: since, pricing: pricing)
+        result.unparsedLineCount = wrapped.count - entries.count
+        return result
     }
 
     /// Stable source configuration identity rather than the discovered root list: Cowork adds session
@@ -372,15 +387,37 @@ actor ClaudeLogUsageScanner {
 
     /// Parse every usage line of one session file. Entries keep their raw timestamps — the date
     /// window is applied at aggregation so a cached parse stays valid as the window slides.
-    static func parseFile(_ data: Data) -> [Entry] {
+    ///
+    /// Local edit (pace Task 8, not upstream): returns `[EntryOrUnparsed]` instead of `[Entry]` so a
+    /// line with no `"usage":{` marker that ALSO fails to parse as JSON at all — a genuinely
+    /// corrupt/foreign line, not an ordinary non-usage log record (user turns, tool results, etc.,
+    /// which are valid JSON and stay silently skipped exactly as upstream) — is counted rather than
+    /// dropped. `scan()` unwraps this back into `[Entry]` plus a count.
+    static func parseFile(_ data: Data) -> [EntryOrUnparsed] {
         let marker = Data(#""usage":{"#.utf8)
-        var entries: [Entry] = []
+        var results: [EntryOrUnparsed] = []
         for line in data.split(separator: UInt8(ascii: "\n")) {
-            guard line.range(of: marker) != nil else { continue }
+            guard line.range(of: marker) != nil else {
+                if isUnparsableLine(line) { results.append(EntryOrUnparsed(entry: nil)) }
+                continue
+            }
             if hasUnsupportedNullField(line) { continue }
-            entries.append(contentsOf: parseEntries(Data(line)))
+            for entry in parseEntries(Data(line)) {
+                results.append(EntryOrUnparsed(entry: entry))
+            }
         }
-        return entries
+        return results
+    }
+
+    /// `true` for a non-blank line that isn't valid JSON at all — the "this line was garbage" signal
+    /// behind `LogUsageScan.unparsedLineCount`. A non-usage line that IS valid JSON (the overwhelming
+    /// majority of a session file: user turns, tool results, etc.) is not garbage and is not counted.
+    private static func isUnparsableLine(_ line: Data.SubSequence) -> Bool {
+        let isBlank = line.allSatisfy {
+            $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t") || $0 == UInt8(ascii: "\r")
+        }
+        guard !isBlank else { return false }
+        return (try? JSONSerialization.jsonObject(with: Data(line))) == nil
     }
 
     /// Decode one JSONL line into an `Entry`, mirroring what ccusage's serde model accepts: `usage`
@@ -603,6 +640,9 @@ actor ClaudeLogUsageScanner {
     /// unpriceable usage surfaces.
     static func aggregate(entries: [Entry], since: Date, pricing: ModelPricing) -> LogUsageScan {
         var accumulator = DailyUsageAccumulator()
+        // Local edit (pace Task 8, not upstream): per-message timestamped rows alongside the existing
+        // day-bucketed accumulation — see `LogUsageScan.entries`.
+        var timestamped: [ModelUsageEntry] = []
 
         for entry in entries where entry.timestamp >= since {
             let day = DailyUsageAccumulator.dayKey(from: entry.timestamp)
@@ -624,9 +664,14 @@ actor ClaudeLogUsageScanner {
             }
 
             accumulator.add(day: day, tokens: entry.tokens.totalTokens, cost: cost, model: modelName)
+            timestamped.append(ModelUsageEntry(
+                model: modelName, totalTokens: entry.tokens.totalTokens, costUSD: cost, timestamp: entry.timestamp
+            ))
         }
 
-        return accumulator.build()
+        var scan = accumulator.build()
+        scan.entries = timestamped
+        return scan
     }
 }
 
