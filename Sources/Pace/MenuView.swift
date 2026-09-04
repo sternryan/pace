@@ -10,6 +10,9 @@ struct MenuView: View {
                 if let h = r.headline {
                     Text(h.verdict).font(.headline)
                         .foregroundStyle(h.status == .ahead || h.status == .capped ? .red : .primary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(nil)
                 }
                 if let a = r.advice { Text(a).font(.subheadline) }
                 Divider()
@@ -67,7 +70,8 @@ struct WindowRow: View {
                 Text(w.kind.displayName)
                 Spacer()
                 Text("\(w.percentUsed)%").monospacedDigit()
-                Text(w.source.rawValue).font(.caption2).foregroundStyle(.secondary)
+                Text("\(w.source.rawValue) · \(PaceFormatter.ageLabel(since: w.fetchedAt, now: Date()))")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
@@ -82,6 +86,9 @@ struct WindowRow: View {
             }
             .frame(height: 6)
             Text(w.verdict).font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(nil)
         }
     }
 }
