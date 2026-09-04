@@ -42,22 +42,44 @@ public final class LoopbackServer: @unchecked Sendable {
             guard self.active < self.maxConnections else { conn.cancel(); return }
             self.active += 1
             conn.start(queue: self.queue)
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
-                guard let self else { return }
-                let head = String(decoding: data ?? Data(), as: UTF8.self)
-                let line = head.split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
-                let parts = line.split(separator: " ")
-                let method = parts.count > 0 ? String(parts[0]) : ""
-                let path = parts.count > 1 ? String(parts[1]) : ""
-                Task {
-                    let response: (Int, Data)
-                    switch (method, path) {
-                    case ("GET", "/v1/report"):  response = self.encode(self.report())
-                    case ("POST", "/v1/refresh"): response = self.encode(await self.refresh())
-                    default: response = (404, Data("{\"error\":\"not found\"}".utf8))
-                    }
-                    self.send(conn, status: response.0, body: response.1)
+            self.receiveRequestLine(conn, buffer: Data())
+        }
+    }
+
+    /// Accumulates into `buffer` across as many `receive` calls as it takes to see a
+    /// complete request line (`\r\n`). A client can deliver the request split across
+    /// multiple TCP segments, so a single `receive` is not guaranteed to contain it.
+    private func receiveRequestLine(_ conn: NWConnection, buffer: Data) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, error in
+            guard let self else { return }
+            guard error == nil, let data, !data.isEmpty else {
+                conn.cancel()
+                self.queue.async { self.active -= 1 }
+                return
+            }
+            var buffer = buffer
+            buffer.append(data)
+            let head = String(decoding: buffer, as: UTF8.self)
+            guard let range = head.range(of: "\r\n") else {
+                guard buffer.count <= 8192 else {
+                    self.send(conn, status: 400, body: Data("{\"error\":\"request line too long\"}".utf8))
+                    return
                 }
+                self.receiveRequestLine(conn, buffer: buffer)
+                return
+            }
+            let line = String(head[head.startIndex..<range.lowerBound])
+            let parts = line.split(separator: " ")
+            let method = parts.count > 0 ? String(parts[0]) : ""
+            let path = parts.count > 1 ? String(parts[1]) : ""
+            Task {
+                let response: (Int, Data)
+                switch (method, path) {
+                case ("GET", "/v1/report"):  response = self.encode(self.report())
+                case ("POST", "/v1/refresh"): response = self.encode(await self.refresh())
+                default: response = (404, Data("{\"error\":\"not found\"}".utf8))
+                }
+                self.send(conn, status: response.0, body: response.1)
             }
         }
     }
@@ -69,7 +91,13 @@ public final class LoopbackServer: @unchecked Sendable {
     }
 
     private func send(_ conn: NWConnection, status: Int, body: Data) {
-        let reason = status == 200 ? "OK" : (status == 404 ? "Not Found" : "Service Unavailable")
+        let reason: String
+        switch status {
+        case 200: reason = "OK"
+        case 400: reason = "Bad Request"
+        case 404: reason = "Not Found"
+        default: reason = "Service Unavailable"
+        }
         let head = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         conn.send(content: Data(head.utf8) + body, completion: .contentProcessed { [weak self] _ in
             conn.cancel()
