@@ -1,4 +1,4 @@
-.PHONY: test build run app install cli install-cli
+.PHONY: test build run app install cli install-cli install-statusline
 
 test:
 	swift test
@@ -25,3 +25,7 @@ install-cli: cli
 	mkdir -p "$$HOME/.local/bin"
 	cp .build/release/pace-cli "$$HOME/.local/bin/pace"
 	@echo "Installed ~/.local/bin/pace"
+
+install-statusline:
+	cp Scripts/pace-statusline-segment.sh "$$HOME/.claude/hooks/pace-statusline-segment.sh"
+	chmod +x "$$HOME/.claude/hooks/pace-statusline-segment.sh"
