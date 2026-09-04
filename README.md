@@ -62,3 +62,5 @@ Codex Pace is not affiliated with or endorsed by OpenAI.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Retired 2026-09-04: merged into sternryan/pace v3.
