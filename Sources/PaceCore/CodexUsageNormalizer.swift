@@ -1,5 +1,7 @@
 import Foundation
 
+// Response field names derived from robinebers/openusage@8321283f Sources/OpenUsage/Providers/Codex/CodexUsageMapper.swift (MIT). Code written fresh for pace.
+
 public enum CodexUsageNormalizer {
     /// Reads `rate_limit.primary_window` → `.codexSession`, `rate_limit.secondary_window` → `.codexWeek`.
     public static func lanes(fromJSON data: Data, now: Date) -> [LaneUsage]? {

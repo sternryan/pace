@@ -1,5 +1,7 @@
 import Foundation
 
+// Endpoint URLs, client id, and header set derived from robinebers/openusage@8321283f Sources/OpenUsage/Providers/Codex/CodexUsageClient.swift (MIT). Code written fresh for pace.
+
 public struct CodexUsageClient: Sendable {
     static let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     static let refreshURL = URL(string: "https://auth.openai.com/oauth/token")!
@@ -32,7 +34,8 @@ public struct CodexUsageClient: Sendable {
         guard let rt = auth.refreshToken else { return nil }
         var req = URLRequest(url: Self.refreshURL); req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        req.httpBody = "grant_type=refresh_token&client_id=\(Self.clientID)&refresh_token=\(rt)".data(using: .utf8)
+        let encodedRT = rt.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? rt
+        req.httpBody = "grant_type=refresh_token&client_id=\(Self.clientID)&refresh_token=\(encodedRT)".data(using: .utf8)
         guard let (data, resp) = try? await session.data(for: req),
               (200..<300).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
