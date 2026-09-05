@@ -6,14 +6,11 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "PaceCore", targets: ["PaceCore"]),
-        .executable(name: "Pace", targets: ["Pace"]),
-        .executable(name: "pace-cli", targets: ["PaceCLI"])
+        .executable(name: "Pace", targets: ["Pace"])
     ],
     targets: [
-        .target(name: "PaceCore", exclude: ["Vendor/OpenUsage/LICENSE", "Vendor/VENDORED.md"]),
+        .target(name: "PaceCore"),
         .executableTarget(name: "Pace", dependencies: ["PaceCore"]),
-        .executableTarget(name: "PaceCLI", dependencies: ["PaceCore"]),
-        .testTarget(name: "PaceCoreTests", dependencies: ["PaceCore"],
-                    resources: [.copy("Fixtures")])
+        .testTarget(name: "PaceCoreTests", dependencies: ["PaceCore"])
     ]
 )

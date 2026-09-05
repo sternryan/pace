@@ -119,18 +119,6 @@ final class PaceCalculatorTests: XCTestCase {
         XCTAssertEqual(reading.capBeforeReset, true)
     }
 
-    func testCappedLaneCountsAsAheadForTheIconPath() {
-        // Fix round 1 follow-up: `status(for:now:)` reports 100%-used as its
-        // own `.capped` case, but the v2 icon path (`isAheadOfPace`) must
-        // still alarm on a capped lane.
-        let now = Date()
-        let lane = LaneUsage(kind: .session, percentUsed: 100,
-                             resetDate: now.addingTimeInterval(5 * 3600 - 30 * 60), // 30 min elapsed
-                             windowLength: 5 * 3600, severity: .normal)
-        let reading = PaceCalculator.reading(for: lane, now: now)
-        XCTAssertTrue(reading.isAheadOfPace)
-    }
-
     func testResetLabelUnderADay() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let lane = LaneUsage(kind: .session, percentUsed: 21, resetDate: now.addingTimeInterval(3 * 3600 + 53 * 60), windowLength: nil)

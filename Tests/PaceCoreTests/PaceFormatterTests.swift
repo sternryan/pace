@@ -18,13 +18,6 @@ final class PaceFormatterTests: XCTestCase {
                        "after reset — resets first")
     }
 
-    func testCountdownLabel() {
-        let now = Date(timeIntervalSince1970: 1_787_200_000)
-        XCTAssertEqual(PaceFormatter.countdownLabel(until: now.addingTimeInterval(3 * 3600 + 600), now: now), "resets in 3h 10m")
-        XCTAssertEqual(PaceFormatter.countdownLabel(until: now.addingTimeInterval(300), now: now), "resets in 5m")
-        XCTAssertEqual(PaceFormatter.countdownLabel(until: now.addingTimeInterval(-60), now: now), "resets shortly")
-    }
-
     func testAgeLabel() {
         let now = Date(timeIntervalSince1970: 1_787_200_000)
         XCTAssertEqual(PaceFormatter.ageLabel(since: now.addingTimeInterval(-300), now: now), "5m ago")

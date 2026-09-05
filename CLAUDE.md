@@ -47,12 +47,6 @@ make install  # build, wrap into ~/Applications/Pace.app, sign
 
 ## Where things live
 
-- `Sources/PaceCore/` — the four providers (Claude, Codex, smithy, spend), the pacing engine,
-  parsing, icon geometry, notification governor, cache, `ReportStore`, the loopback server, and
-  the vendored `openusage` JSONL scanners under `Vendor/` (see `Vendor/VENDORED.md`).
-- `Sources/Pace/` — the SwiftUI `MenuBarExtra` shell: icon rendering, dropdown UI, keychain store,
-  preferences.
-- `Sources/PaceCLI/` — the standalone `pace` CLI binary (`make cli` / `make install-cli`).
+- `Sources/PaceCore/` — parsing, pace math, icon geometry, notification governor, cache.
+- `Sources/Pace/` — MenuBarExtra app, the two usage sources, keychain store, preferences.
 - `Scripts/build-app.sh`, `Scripts/ensure-signing-cert.sh` — what `make app` / `make install` run.
-- `Scripts/pace-statusline-segment.sh` — installed by `make install-statusline` to
-  `~/.claude/hooks/`, read by `~/.claude/bin/statusline.sh`.

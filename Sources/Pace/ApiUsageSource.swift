@@ -1,21 +1,22 @@
 import Foundation
+import PaceCore
 
 /// Primary data source: the same endpoint Claude Code's /usage command reads.
 /// One GET per refresh; the token is used in-memory only — never stored,
 /// never logged, never refreshed (Claude Code owns renewal).
-public final class ApiUsageSource {
+final class ApiUsageSource: UsageSource {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let store: KeychainCredentialStore
     private let session: URLSession
 
-    public init(store: KeychainCredentialStore = KeychainCredentialStore()) {
+    init(store: KeychainCredentialStore = KeychainCredentialStore()) {
         self.store = store
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10 // a hung socket must not wedge the refresh cycle
         self.session = URLSession(configuration: config)
     }
 
-    public func fetch() async -> Result<UsageSnapshot, FetchStatus>? {
+    func fetch() async -> Result<UsageSnapshot, FetchStatus>? {
         let credential: ClaudeCodeCredential
         switch store.read() {
         case .found(let found): credential = found

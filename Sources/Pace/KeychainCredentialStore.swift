@@ -1,8 +1,9 @@
 import Foundation
 import Security
 import os
+import PaceCore
 
-public enum KeychainReadResult {
+enum KeychainReadResult {
     case found(ClaudeCodeCredential)
     /// Items exist but every credential is expired — the user has Claude Code
     /// and needs to re-login there. NOT the same as `.none`: showing a
@@ -28,7 +29,7 @@ public enum KeychainReadResult {
 ///
 /// Class, not struct: needs to remember which items recently required (and
 /// didn't get) user interaction, across polls.
-public final class KeychainCredentialStore {
+final class KeychainCredentialStore {
     private static let servicePrefix = "Claude Code-credentials"
     /// Every `claude` CLI launch rewrites its credential item (confirmed:
     /// item mdat lines up with a `claude` process start time), and rewriting
@@ -43,9 +44,7 @@ public final class KeychainCredentialStore {
     private var lastPromptFailure: [String: Date] = [:]
     private static let log = Logger(subsystem: "com.sternryan.pace", category: "keychain")
 
-    public init() {}
-
-    public func read(now: Date = Date()) -> KeychainReadResult {
+    func read(now: Date = Date()) -> KeychainReadResult {
         // Decrypt newest-modified item first and stop as soon as one parses
         // non-expired — each candidate is a SEPARATE Keychain item with its
         // own ACL grant, so decrypting all of them on every poll means every
@@ -87,7 +86,7 @@ public final class KeychainCredentialStore {
 
     /// Attributes-only (pass 1): costs nothing, decrypts nothing, prompts for
     /// nothing — safe to call synchronously at launch for mode selection.
-    public func hasAnyItem() -> Bool {
+    func hasAnyItem() -> Bool {
         !matchingItemRefs().isEmpty
     }
 

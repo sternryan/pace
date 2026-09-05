@@ -1,2 +1,0 @@
-{"object":"list","data":[{"id":"local-fast","object":"model","smithy":{"lane":"local-fast","serving_now":true,"candidates":[]}},
- {"id":"local-heavy","object":"model","smithy":{"lane":"local-heavy","serving_now":true,"candidates":[{"node":"anvil","serves":"local-heavy","endpoint":"http://100.122.29.52:8000","status":"ready"}]}}]}

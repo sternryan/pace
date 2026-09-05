@@ -2,18 +2,18 @@ import SwiftUI
 
 @main
 struct PaceApp: App {
-    @State private var state = AppState()
+    @State private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuView(state: state)
+            MenuView(appState: appState)
         } label: {
-            Image(nsImage: IconRenderer.image(for: state.pinned, stale: state.isStale))
+            Image(nsImage: IconRenderer.render(readings: appState.paceReadings, status: appState.status))
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            PreferencesView(state: state)
+            PreferencesView(appState: appState)
         }
     }
 }
