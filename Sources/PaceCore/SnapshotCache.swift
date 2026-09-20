@@ -15,6 +15,16 @@ public struct SnapshotCache {
             .appendingPathComponent("Pace", isDirectory: true)
     }
 
+    /// Per-provider cache directory. Two providers sharing one file would
+    /// clobber each other's snapshot every tick. `.claude` deliberately keeps
+    /// the legacy path so an existing install does not lose its cache.
+    public static func defaultDirectory(for provider: PaceProvider) -> URL {
+        switch provider {
+        case .claude: return defaultDirectory()
+        case .codex:  return defaultDirectory().appendingPathComponent("Codex", isDirectory: true)
+        }
+    }
+
     public func load() -> UsageSnapshot? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         return try? JSONDecoder().decode(UsageSnapshot.self, from: data)

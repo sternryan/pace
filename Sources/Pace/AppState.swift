@@ -11,6 +11,9 @@ enum DataSourceMode: String {
 @Observable
 @MainActor
 final class AppState {
+    /// Which usage source this instance tracks. One AppState per provider, one
+    /// menubar icon per AppState -- see PaceProvider for why they never merge.
+    let provider: PaceProvider
     private(set) var paceReadings: [PaceReading] = []
     private(set) var status: FetchStatus = .ok
     private(set) var lastSuccessAt: Date?
@@ -26,11 +29,20 @@ final class AppState {
     // migration note in init). API mode polls faster because a refresh is
     // one small JSON GET, not a WebView page load.
     var refreshInterval: TimeInterval {
-        didSet { UserDefaults.standard.set(refreshInterval, forKey: "refreshInterval") }
+        didSet { UserDefaults.standard.set(refreshInterval, forKey: refreshIntervalKey) }
+    }
+
+    /// Claude keeps the bare legacy key so an existing install keeps its chosen
+    /// interval; Codex gets its own. A shared key would have the two instances
+    /// overwrite each other on every didSet.
+    private var refreshIntervalKey: String { Self.refreshIntervalKey(for: provider) }
+
+    private static func refreshIntervalKey(for provider: PaceProvider) -> String {
+        provider == .claude ? "refreshInterval" : "refreshInterval.\(provider.rawValue)"
     }
 
     private let store = KeychainCredentialStore()
-    private let cache = SnapshotCache(directory: SnapshotCache.defaultDirectory())
+    private let cache: SnapshotCache
     private var source: UsageSource
     private var scrapeSource: ScrapeUsageSource? // non-nil only in browser mode
     private var timer: Timer?
@@ -41,13 +53,20 @@ final class AppState {
     private var notificationGovernor = NotificationGovernor()
     private let notifier = PaceNotifier()
 
-    init(source: UsageSource? = nil, mode: DataSourceMode? = nil) {
-        let resolvedMode = mode ?? (store.hasAnyItem() ? .api : .browser)
+    init(provider: PaceProvider = .claude, source: UsageSource? = nil, mode: DataSourceMode? = nil) {
+        self.provider = provider
+        self.cache = SnapshotCache(directory: SnapshotCache.defaultDirectory(for: provider))
+        // Codex publishes its windows to a local session stream, so it has no
+        // browser/API duality -- it is always "api" in the mode sense.
+        let resolvedMode = mode ?? (provider == .codex ? .api : (store.hasAnyItem() ? .api : .browser))
         self.mode = resolvedMode
 
         if let source {
             self.source = source
             self.scrapeSource = source as? ScrapeUsageSource
+        } else if provider == .codex {
+            self.source = CodexSessionUsageSource()
+            self.scrapeSource = nil
         } else if resolvedMode == .api {
             self.source = ApiUsageSource(store: store)
             self.scrapeSource = nil
@@ -63,11 +82,12 @@ final class AppState {
         // chosen 360 back to the API-mode default.
         let defaults = UserDefaults.standard
         let modeDefault: TimeInterval = resolvedMode == .api ? 120 : 360
-        let stored = defaults.double(forKey: "refreshInterval")
-        if !defaults.bool(forKey: "didMigrateRefreshIntervalV2") {
+        let key = Self.refreshIntervalKey(for: provider)
+        let stored = defaults.double(forKey: key)
+        if provider == .claude, !defaults.bool(forKey: "didMigrateRefreshIntervalV2") {
             defaults.set(true, forKey: "didMigrateRefreshIntervalV2")
             self.refreshInterval = (stored > 0 && stored != 360) ? stored : modeDefault
-            defaults.set(self.refreshInterval, forKey: "refreshInterval")
+            defaults.set(self.refreshInterval, forKey: key)
         } else {
             self.refreshInterval = stored > 0 ? stored : modeDefault
         }
@@ -102,7 +122,7 @@ final class AppState {
     /// have installed Claude Code while Pace was running). Never during an
     /// open sign-in — yanking the scraper mid-login would orphan the flow.
     func refreshNow() {
-        if mode == .browser, scrapeSource?.fetcher.isPresentingLogin != true, store.hasAnyItem() {
+        if provider == .claude, mode == .browser, scrapeSource?.fetcher.isPresentingLogin != true, store.hasAnyItem() {
             postLoginPollTask?.cancel()
             let retiring = scrapeSource
             mode = .api
