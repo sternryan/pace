@@ -27,7 +27,11 @@ public struct LaneUsage: Equatable, Sendable, Codable {
     }
 
     public var effectiveDisplayName: String {
-        if let displayNameOverride, kind == .fableWeek { return "\(displayNameOverride) · week" }
+        if let displayNameOverride {
+            // Fable keeps its suffix; every other source-labelled lane (Codex
+            // windows) uses the label verbatim.
+            return kind == .fableWeek ? "\(displayNameOverride) · week" : displayNameOverride
+        }
         return kind.displayName
     }
 }
